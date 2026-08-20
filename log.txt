@@ -1,0 +1,177 @@
+[2026-08-13T11:39:00.556933+00:00] Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1319, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1365, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1314, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1074, in _send_output
+    self.send(msg)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1018, in send
+    self.connect()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 984, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 61] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 430, in fetch_chat
+    with urlopen(request, timeout=timeout) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 61] Connection refused>
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 440, in fetch_chat
+    raise ConnectionError(f"Could not connect to the chat API at {endpoint}: {error.reason}") from error
+ConnectionError: Could not connect to the chat API at http://localhost:8080/api/client-app/get-chat: [Errno 61] Connection refused
+[2026-08-13T11:39:00.649405+00:00] Traceback (most recent call last):
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1344, in do_open
+    h.request(req.get_method(), req.selector, req.data, headers,
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1319, in request
+    self._send_request(method, url, body, headers, encode_chunked)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1365, in _send_request
+    self.endheaders(body, encode_chunked=encode_chunked)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1314, in endheaders
+    self._send_output(message_body, encode_chunked=encode_chunked)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1074, in _send_output
+    self.send(msg)
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 1018, in send
+    self.connect()
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/http/client.py", line 984, in connect
+    self.sock = self._create_connection(
+                ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py", line 852, in create_connection
+    raise exceptions[0]
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/socket.py", line 837, in create_connection
+    sock.connect(sa)
+ConnectionRefusedError: [Errno 61] Connection refused
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 430, in fetch_chat
+    with urlopen(request, timeout=timeout) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 515, in open
+    response = self._open(req, data)
+               ^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 532, in _open
+    result = self._call_chain(self.handle_open, protocol, protocol +
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1373, in http_open
+    return self.do_open(http.client.HTTPConnection, req)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 1347, in do_open
+    raise URLError(err)
+urllib.error.URLError: <urlopen error [Errno 61] Connection refused>
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 440, in fetch_chat
+    raise ConnectionError(f"Could not connect to the chat API at {endpoint}: {error.reason}") from error
+ConnectionError: Could not connect to the chat API at http://localhost:8080/api/client-app/get-chat: [Errno 61] Connection refused
+[2026-08-13T11:39:00.742941+00:00] Could not connect to the chat API at http://localhost:8080/api/client-app/get-chat: [Errno 61] Connection refused
+[2026-08-15T01:53:15.156381+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/app.py", line 43, in poll_chat_file
+    def poll_chat_file(self):
+    
+KeyboardInterrupt
+[2026-08-15T01:53:17.402203+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/app.py", line 43, in poll_chat_file
+    def poll_chat_file(self):
+    
+KeyboardInterrupt
+[2026-08-15T01:53:19.651351+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/app.py", line 43, in poll_chat_file
+    def poll_chat_file(self):
+    
+KeyboardInterrupt
+[2026-08-15T01:53:21.901479+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/app.py", line 43, in poll_chat_file
+    def poll_chat_file(self):
+    
+KeyboardInterrupt
+[2026-08-15T03:11:33.679427+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 684, in submit_job
+    with urlopen(request, timeout=timeout) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 400: 
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 692, in submit_job
+    raise RuntimeError(f"Job API returned HTTP {error.code}: {message}") from error
+RuntimeError: Job API returned HTTP 400: task and extra_data must contain valid JSON
+[2026-08-15T03:11:33.682208+00:00] Job API returned HTTP 400: task and extra_data must contain valid JSON
+[2026-08-15T03:12:30.063977+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/app.py", line 44, in poll_chat_file
+    def poll_chat_file(self):
+    
+KeyboardInterrupt
+[2026-08-18T06:50:36.681193+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/swarif_ui.py", line 1239, in set_server_connected
+    self.sidebar.set_connected(self._server_connected)
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/swarif_ui.py", line 199, in set_connected
+    self.status.setText("●  Connected" if connected else "●  Disconnected")
+RuntimeError: wrapped C/C++ object of type QLabel has been deleted
