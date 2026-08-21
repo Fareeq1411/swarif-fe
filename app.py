@@ -11,7 +11,6 @@ from PyQt5.QtWidgets import QApplication
 
 from agent import Agent, DEFAULT_API_URL, SEND_MESSAGE_PATH
 from error_logger import install_exception_hooks, log
-from ollama_bootstrap import BootstrapWindow
 from server_connection import ServerConnection
 from swarif_ui import SwarifWindow, partition_jobs_by_status
 
@@ -22,6 +21,7 @@ class SwarifBackend(QObject):
     chat_file_changed = pyqtSignal()
     backend_error = pyqtSignal(str)
     jobs_changed = pyqtSignal(list, list)
+    agent_typing_changed = pyqtSignal(bool)
 
     def __init__(self, window, poll_interval_ms=750):
         super().__init__(window)
@@ -42,6 +42,7 @@ class SwarifBackend(QObject):
         self.chat_file_changed.connect(self.poll_chat_file)
         self.backend_error.connect(self.report_error)
         self.jobs_changed.connect(self.window.update_jobs)
+        self.agent_typing_changed.connect(self.window.set_agent_typing)
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(poll_interval_ms)
@@ -196,6 +197,7 @@ class SwarifBackend(QObject):
 
         # Required order: local chat first, database second, agent third.
         Agent.append_local_chat(provisional)
+        self.agent_typing_changed.emit(True)
         self.chat_file_changed.emit()
 
         sequence = self._register_agent_message(message, org_id.strip(), user_id)
@@ -293,7 +295,10 @@ class SwarifBackend(QObject):
                 if revision == self._agent_revision:
                     for sequence in sequences:
                         self._agent_messages.pop(sequence, None)
+                idle = not self._agent_messages
                 self._agent_condition.notify_all()
+            if idle:
+                self.agent_typing_changed.emit(False)
 
     def _store_and_decide(self, provisional, org_id, user_id, sequence):
         stored_message = None
@@ -317,6 +322,10 @@ class SwarifBackend(QObject):
             self._send_failure_reply(error, org_id, user_id)
             self.chat_file_changed.emit()
             self.backend_error.emit(str(error))
+            with self._agent_condition:
+                idle = not self._agent_messages
+            if idle:
+                self.agent_typing_changed.emit(False)
 
     @staticmethod
     def _send_failure_reply(error, org_id, user_id, user_message=None):
@@ -392,35 +401,19 @@ def main():
     install_exception_hooks()
     app = QApplication(sys.argv)
     app.setApplicationName("Swarif")
-    app.setQuitOnLastWindowClosed(False)
-    runtime = {}
-    bootstrap = BootstrapWindow()
-    app.aboutToQuit.connect(bootstrap.service.stop_owned_server)
-
-    def launch_swarif():
-        window = SwarifWindow()
-        backend = SwarifBackend(window)
-        window.backend = backend
-        server_connection = ServerConnection(Agent.read_session, parent=app)
-        server_connection.status_changed.connect(window.set_server_connected)
-        server_connection.completion_received.connect(backend.receive_job_completion)
-        server_connection.progress_received.connect(window.update_job_progress)
-        window.server_connection_changed.connect(server_connection.reconnect)
-        app.aboutToQuit.connect(server_connection.stop)
-        window.server_connection = server_connection
-        runtime.update(
-            window=window,
-            backend=backend,
-            server_connection=server_connection,
-        )
-        server_connection.start()
-        window.show()
-        bootstrap.close()
-        app.setQuitOnLastWindowClosed(True)
-
-    bootstrap.ready.connect(launch_swarif)
-    bootstrap.show()
-    bootstrap.start()
+    window = SwarifWindow()
+    backend = SwarifBackend(window)
+    window.backend = backend
+    server_connection = ServerConnection(Agent.read_session, parent=app)
+    server_connection.status_changed.connect(window.set_server_connected)
+    server_connection.completion_received.connect(backend.receive_job_completion)
+    server_connection.progress_received.connect(window.update_job_progress)
+    server_connection.log_message.connect(window.append_connection_log)
+    window.server_connection_changed.connect(server_connection.reconnect)
+    app.aboutToQuit.connect(server_connection.stop)
+    window.server_connection = server_connection
+    server_connection.start()
+    window.show()
     sys.exit(app.exec_())
 
 

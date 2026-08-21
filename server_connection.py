@@ -11,6 +11,7 @@ from PyQt5.QtCore import QObject, pyqtSignal
 
 
 DEFAULT_SERVER_PORT = int(os.getenv("SWARIF_AGENT_PORT", "8767"))
+DEFAULT_CONNECTION_CHECK_INTERVAL = 2
 
 
 class ServerConnection(QObject):
@@ -19,14 +20,15 @@ class ServerConnection(QObject):
     status_changed = pyqtSignal(bool)
     completion_received = pyqtSignal(str, object)
     progress_received = pyqtSignal(str, object)
+    log_message = pyqtSignal(str)
 
     def __init__(
         self,
         config_provider,
         server_port=DEFAULT_SERVER_PORT,
-        timeout=5,
-        retry_interval=10,
-        heartbeat_interval=10,
+        timeout=DEFAULT_CONNECTION_CHECK_INTERVAL,
+        retry_interval=DEFAULT_CONNECTION_CHECK_INTERVAL,
+        heartbeat_interval=DEFAULT_CONNECTION_CHECK_INTERVAL,
         parent=None,
     ):
         super().__init__(parent)
@@ -80,6 +82,7 @@ class ServerConnection(QObject):
         self._wake_event.set()
 
     def connection_loop(self):
+        self._log(f"TCP connection monitor started ({self.retry_interval}-second interval)")
         try:
             while not self._stop_event.is_set():
                 config = self.config_provider() or {}
@@ -89,33 +92,49 @@ class ServerConnection(QObject):
 
                 if not user_id or not server_ip:
                     self._set_connected(False)
+                    missing = []
+                    if not user_id:
+                        missing.append("user ID")
+                    if not server_ip:
+                        missing.append("agent IP")
+                    self._log(
+                        f"Connection attempt skipped: missing {' and '.join(missing)}; checking again in {self.retry_interval} seconds"
+                    )
                     self._wait(self.retry_interval)
                     continue
 
+                attempt_started = time.monotonic()
                 try:
                     server_port = int(server_port)
                     if not 1 <= server_port <= 65535:
                         raise ValueError
                     if not self.connected:
+                        self._log(f"Connecting to {server_ip}:{server_port}")
                         if not self.connect_to_server(server_ip, server_port, user_id):
+                            self._log("Connection handshake was rejected")
                             self._set_connected(False)
-                            self._wait(self.retry_interval)
+                            self._log(f"Next connection attempt in {self.retry_interval} seconds")
+                            self._wait_for_retry(attempt_started)
                             continue
                         self._set_connected(True)
+                        self._log(f"Connected to {server_ip}:{server_port}")
 
                     if not self.listen_for_server(user_id):
                         self._set_connected(False)
                         self._close_socket()
-                except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                except (OSError, ValueError, TypeError, json.JSONDecodeError) as error:
+                    self._log(f"Connection error: {error}")
                     self._set_connected(False)
                     self._close_socket()
-                    self._wait(self.retry_interval)
+                    self._log(f"Next connection attempt in {self.retry_interval} seconds")
+                    self._wait_for_retry(attempt_started)
         finally:
             self._close_socket()
             self._set_connected(False)
 
     def connect_to_server(self, server_ip, server_port, user_id):
         """Open the TCP socket and perform the initial connect handshake."""
+        self._log(f"Opening TCP socket to {server_ip}:{server_port}")
         sock = socket.create_connection(
             (str(server_ip), server_port),
             timeout=self.timeout,
@@ -180,6 +199,7 @@ class ServerConnection(QObject):
         if sock is None:
             raise ConnectionError("The local server socket is not connected")
 
+        self._log(f"SEND {json.dumps(packet, ensure_ascii=False)}")
         sock.sendall(json.dumps(packet).encode("utf-8"))
         while True:
             response = self.receive_packet(sock)
@@ -213,6 +233,7 @@ class ServerConnection(QObject):
                     )
                     if not isinstance(decoded, dict):
                         raise ValueError("The local server response must be a JSON object")
+                    self._log(f"RECV {json.dumps(decoded, ensure_ascii=False)}")
                     return decoded
 
             chunk = sock.recv(4096)
@@ -247,6 +268,11 @@ class ServerConnection(QObject):
         self._wake_event.clear()
         return was_woken
 
+    def _wait_for_retry(self, attempt_started=None):
+        """Keep disconnected connection attempts on the configured cadence."""
+        elapsed = 0 if attempt_started is None else time.monotonic() - attempt_started
+        self._wait(max(0, self.retry_interval - elapsed))
+
     def _set_connected(self, connected):
         connected = bool(connected)
         with self._state_lock:
@@ -254,6 +280,11 @@ class ServerConnection(QObject):
             self._connected = connected
         if changed:
             self.status_changed.emit(connected)
+            if not connected:
+                self._log("Disconnected")
+
+    def _log(self, message):
+        self.log_message.emit(str(message))
 
     def _close_socket(self):
         with self._socket_lock:

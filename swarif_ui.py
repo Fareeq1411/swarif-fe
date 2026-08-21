@@ -12,6 +12,7 @@ from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
+    QDialog,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
@@ -19,10 +20,12 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QPlainTextEdit,
     QScrollArea,
     QSizePolicy,
     QSpacerItem,
     QStackedWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -241,6 +244,40 @@ class MessageBubble(QWidget):
         outer.addLayout(time_line)
 
 
+class AnimatedDots(QLabel):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("typingDots")
+        self.setFixedWidth(24)
+        self._frame = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(400)
+        self._timer.timeout.connect(self.advance)
+        self.advance()
+        self._timer.start()
+
+    def advance(self):
+        self._frame = (self._frame % 3) + 1
+        self.setText("." * self._frame)
+
+
+class TypingIndicator(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("typingIndicator")
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 4, 0, 8)
+        layout.setSpacing(8)
+        layout.addWidget(BotAvatar(32), 0, Qt.AlignTop)
+        bubble = QFrame()
+        bubble.setObjectName("typingBubble")
+        bubble_layout = QHBoxLayout(bubble)
+        bubble_layout.setContentsMargins(13, 7, 13, 9)
+        bubble_layout.addWidget(AnimatedDots())
+        layout.addWidget(bubble, 0, Qt.AlignTop)
+        layout.addStretch()
+
+
 def format_chat_time(value):
     if not isinstance(value, str) or not value.strip():
         return ""
@@ -277,13 +314,44 @@ def is_local_agent_ip(agent_ip):
     return str(address) in local_addresses
 
 
+class GrowingMessageEdit(QTextEdit):
+    submit_requested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAcceptRichText(False)
+        self.setLineWrapMode(QTextEdit.WidgetWidth)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.document().documentLayout().documentSizeChanged.connect(
+            self.update_editor_height
+        )
+        self.textChanged.connect(self.update_editor_height)
+        self.update_editor_height()
+
+    def update_editor_height(self, *_args):
+        document_height = self.document().documentLayout().documentSize().height()
+        margins = self.contentsMargins()
+        target = int(document_height + margins.top() + margins.bottom() + 10)
+        self.setFixedHeight(max(34, min(target, 180)))
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and (
+            event.modifiers() & Qt.ShiftModifier
+        ):
+            self.submit_requested.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class Composer(QFrame):
     message_submitted = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("composer")
-        self.setFixedHeight(58)
+        self.setMinimumHeight(58)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(13, 6, 8, 6)
         layout.setSpacing(8)
@@ -293,15 +361,15 @@ class Composer(QFrame):
         attach.setIcon(qta.icon("fa5s.paperclip", color=BLUE))
         attach.setIconSize(QSize(16, 16))
         attach.setToolTip("Attach a file")
-        self.message = QLineEdit()
+        self.message = GrowingMessageEdit()
         self.message.setObjectName("messageInput")
         self.message.setPlaceholderText("Type a message...")
-        self.message.returnPressed.connect(self.submit_message)
+        self.message.submit_requested.connect(self.submit_message)
         send = QPushButton()
         send.setObjectName("sendButton")
         send.setIcon(qta.icon("fa5s.paper-plane", color="white"))
         send.setIconSize(QSize(18, 18))
-        send.setToolTip("Send")
+        send.setToolTip("Send (Shift+Enter)")
         send.clicked.connect(self.submit_message)
 
         layout.addWidget(attach)
@@ -309,7 +377,7 @@ class Composer(QFrame):
         layout.addWidget(send)
 
     def submit_message(self):
-        message = self.message.text().strip()
+        message = self.message.toPlainText().strip()
         if not message:
             return
         self.message.clear()
@@ -776,6 +844,11 @@ class JobProgressBubble(QFrame):
         title.setWordWrap(True)
         label = QLabel("Current Progress:")
         label.setObjectName("jobProgressLabel")
+        label_row = QHBoxLayout()
+        label_row.setSpacing(4)
+        label_row.addWidget(label)
+        label_row.addWidget(AnimatedDots())
+        label_row.addStretch()
         progress = QLabel(
             display_job_value(current_progress)
             if current_progress is not None
@@ -785,14 +858,14 @@ class JobProgressBubble(QFrame):
         progress.setWordWrap(True)
         progress.setTextInteractionFlags(Qt.TextSelectableByMouse)
         layout.addWidget(title)
-        layout.addWidget(label)
+        layout.addLayout(label_row)
         layout.addWidget(progress)
 
 
 class ChatPanel(QFrame):
     message_submitted = pyqtSignal(str)
 
-    def __init__(self, chat_messages=None, newest_first=False, processing_jobs=None, job_progress=None, parent=None):
+    def __init__(self, chat_messages=None, newest_first=False, processing_jobs=None, job_progress=None, agent_typing=False, parent=None):
         super().__init__(parent)
         self.setObjectName("chatPanel")
         layout = QVBoxLayout(self)
@@ -860,6 +933,10 @@ class ChatPanel(QFrame):
         if valid_messages:
             self.empty_state = None
 
+        self.typing_indicator = TypingIndicator()
+        self.typing_indicator.setVisible(bool(agent_typing))
+        messages.addWidget(self.typing_indicator)
+
         self.processing_container = QWidget()
         self.processing_layout = QVBoxLayout(self.processing_container)
         self.processing_layout.setContentsMargins(0, 8, 0, 8)
@@ -888,6 +965,11 @@ class ChatPanel(QFrame):
         scrollbar = self.chat_scroll.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
+    def set_agent_typing(self, typing):
+        self.typing_indicator.setVisible(bool(typing))
+        if typing:
+            QTimer.singleShot(0, self.scroll_to_bottom)
+
     def update_processing_jobs(self, processing_jobs, job_progress):
         while self.processing_layout.count():
             item = self.processing_layout.takeAt(0)
@@ -904,8 +986,47 @@ class ChatPanel(QFrame):
         QTimer.singleShot(0, self.scroll_to_bottom)
 
 
+class ConnectionLogDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("TCP connection log")
+        self.resize(720, 460)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        title = QLabel("TCP connection log")
+        title.setObjectName("sectionTitle")
+        description = QLabel("Live packets and connection events sent between Swarif and the agent server.")
+        description.setObjectName("settingsHelp")
+        self.output = QPlainTextEdit()
+        self.output.setObjectName("connectionLogOutput")
+        self.output.setReadOnly(True)
+        self.output.setPlaceholderText("No connection activity yet.")
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        close = QPushButton("Close")
+        close.setObjectName("settingsSecondary")
+        close.clicked.connect(self.close)
+        actions.addWidget(close)
+
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addWidget(self.output, 1)
+        layout.addLayout(actions)
+
+    def set_entries(self, entries):
+        self.output.setPlainText("\n".join(entries))
+        self.output.verticalScrollBar().setValue(self.output.verticalScrollBar().maximum())
+
+    def append_entry(self, entry):
+        self.output.appendPlainText(entry)
+        self.output.verticalScrollBar().setValue(self.output.verticalScrollBar().maximum())
+
+
 class SettingsPanel(QFrame):
     saved = pyqtSignal(str, int)
+    connection_log_requested = pyqtSignal()
 
     def __init__(self, agent_ip="", server_port=8767, parent=None):
         super().__init__(parent)
@@ -953,6 +1074,33 @@ class SettingsPanel(QFrame):
         layout.addSpacing(8)
         layout.addWidget(save)
         layout.addWidget(self.feedback)
+        connection_log = QPushButton("View connection log")
+        connection_log.setObjectName("settingsSecondary")
+        connection_log.setCursor(Qt.PointingHandCursor)
+        connection_log.clicked.connect(self.connection_log_requested)
+        layout.addWidget(connection_log)
+        layout.addSpacing(22)
+
+        local_llm_title = QLabel("Local LLM")
+        local_llm_title.setObjectName("settingsSectionTitle")
+        local_llm_description = QLabel(
+            "Optionally run AI models on this computer. A local LLM is not required to use Swarif."
+        )
+        local_llm_description.setObjectName("settingsHelp")
+        local_llm_description.setWordWrap(True)
+        setup_local_llm = QPushButton("Set up local LLM")
+        setup_local_llm.setObjectName("settingsSecondary")
+        setup_local_llm.setCursor(Qt.PointingHandCursor)
+        setup_local_llm.clicked.connect(self.show_local_llm_placeholder)
+        self.local_llm_feedback = QLabel("")
+        self.local_llm_feedback.setObjectName("settingsHelp")
+        self.local_llm_feedback.hide()
+
+        layout.addWidget(local_llm_title)
+        layout.addWidget(local_llm_description)
+        layout.addSpacing(4)
+        layout.addWidget(setup_local_llm)
+        layout.addWidget(self.local_llm_feedback)
         layout.addStretch()
 
     def save(self):
@@ -986,6 +1134,10 @@ class SettingsPanel(QFrame):
         self.feedback.style().polish(self.feedback)
         self.feedback.show()
 
+    def show_local_llm_placeholder(self):
+        self.local_llm_feedback.setText("Local LLM setup will be available in a future update.")
+        self.local_llm_feedback.show()
+
 
 class SwarifWindow(QWidget):
     message_submitted = pyqtSignal(str)
@@ -998,6 +1150,9 @@ class SwarifWindow(QWidget):
         self.sidebar = None
         self._job_progress = {}
         self._active_jobs = []
+        self._connection_log = []
+        self._connection_log_dialog = None
+        self._agent_typing = False
         self._inactive_jobs = []
         self.jobs_panel = None
         self._compact = False
@@ -1143,6 +1298,7 @@ class SwarifWindow(QWidget):
             newest_first=False,
             processing_jobs=self.processing_jobs(),
             job_progress=self._job_progress,
+            agent_typing=self._agent_typing,
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
         body_layout.addWidget(self.chat_panel, 1)
@@ -1217,8 +1373,28 @@ class SwarifWindow(QWidget):
                 agent_ip, server_port, settings
             )
         )
+        settings.connection_log_requested.connect(self.show_connection_log)
         body_layout.addWidget(settings, 1)
         self.set_page(body)
+
+    def append_connection_log(self, message):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        entry = f"[{timestamp}] {message}"
+        self._connection_log.append(entry)
+        self._connection_log = self._connection_log[-1000:]
+        if self._connection_log_dialog is not None:
+            self._connection_log_dialog.append_entry(entry)
+
+    def show_connection_log(self):
+        if self._connection_log_dialog is None:
+            self._connection_log_dialog = ConnectionLogDialog(self)
+            self._connection_log_dialog.finished.connect(
+                lambda _result: setattr(self, "_connection_log_dialog", None)
+            )
+        self._connection_log_dialog.set_entries(self._connection_log)
+        self._connection_log_dialog.show()
+        self._connection_log_dialog.raise_()
+        self._connection_log_dialog.activateWindow()
 
     def save_agent_connection(self, agent_ip, server_port, panel):
         try:
@@ -1237,6 +1413,11 @@ class SwarifWindow(QWidget):
         self._server_connected = bool(connected)
         if self.sidebar is not None:
             self.sidebar.set_connected(self._server_connected)
+
+    def set_agent_typing(self, typing):
+        self._agent_typing = bool(typing)
+        if self.current_page is not None and self.current_page.objectName() == "homePage":
+            self.chat_panel.set_agent_typing(self._agent_typing)
 
     def update_job_progress(self, job_id, current_progress):
         """Keep and display the newest TCP progress value for a job."""
@@ -1339,6 +1520,7 @@ class SwarifWindow(QWidget):
             newest_first=False,
             processing_jobs=self.processing_jobs(),
             job_progress=self._job_progress,
+            agent_typing=self._agent_typing,
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
         self.home_layout.addWidget(self.chat_panel, 1)
@@ -1440,6 +1622,10 @@ STYLESHEET = f"""
 }}
 #bubbleIncoming {{ background: {PALE_BLUE}; color: {DARK}; }}
 #bubbleOutgoing {{ background: {BLUE}; color: white; }}
+#typingBubble {{
+    background: {PALE_BLUE}; border-radius: 13px; min-width: 38px;
+}}
+#typingDots {{ color: {BLUE}; font-size: 15px; font-weight: 700; }}
 #timestamp {{ color: {MUTED}; font-size: 10px; }}
 #emptyTitle {{ color: #53647B; font-size: 14px; font-weight: 650; }}
 #emptyText {{ color: #95A4B8; font-size: 11px; }}
@@ -1543,11 +1729,21 @@ STYLESHEET = f"""
 }}
 #settingsInput:focus {{ background: white; border: 1px solid {BLUE}; }}
 #settingsHelp {{ color: {MUTED}; font-size: 10px; }}
+#settingsSectionTitle {{ color: {DARK}; font-size: 13px; font-weight: 700; }}
 #settingsSave {{
     background: {BLUE}; color: white; border: none; border-radius: 11px;
     min-height: 42px; font-size: 13px; font-weight: 650;
 }}
 #settingsSave:hover {{ background: #1768D5; }}
+#settingsSecondary {{
+    background: white; color: {BLUE}; border: 1px solid {BLUE}; border-radius: 11px;
+    min-height: 42px; font-size: 13px; font-weight: 650;
+}}
+#settingsSecondary:hover {{ background: {PALE_BLUE}; }}
+#connectionLogOutput {{
+    background: #101827; color: #DCE7F4; border: 1px solid #293850;
+    border-radius: 10px; padding: 10px; font-family: monospace; font-size: 11px;
+}}
 #settingsFeedback {{ color: #239A5A; font-size: 11px; padding: 6px 0; }}
 #settingsFeedback[error="true"] {{ color: #C3424D; }}
 QScrollBar:vertical {{ background: transparent; width: 5px; margin: 3px; }}
