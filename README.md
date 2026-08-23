@@ -19,6 +19,8 @@ The script performs the complete build automatically:
 - Compiles `Swarif.exe`.
 - Installs Inno Setup when it is missing.
 - Creates the Windows installer.
+- Uses a temporary PyInstaller work directory outside the project, avoiding
+  common OneDrive file-lock errors.
 
 The finished files are:
 
@@ -61,4 +63,3 @@ open dist/Swarif.app
 PyInstaller does not cross-compile. Build the Windows application on Windows
 and the macOS application on macOS. Sign and notarize release builds before
 distributing them publicly.
-

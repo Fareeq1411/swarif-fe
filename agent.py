@@ -16,7 +16,7 @@ from error_logger import log_static_methods
 
 load_dotenv(Path(__file__).with_name(".env"))
 
-DEFAULT_API_URL = os.getenv("SWARIF_API_URL", "http://localhost:8080")
+DEFAULT_API_URL = os.getenv("SWARIF_API_URL", "https://api.swarif.com")
 DEFAULT_DEEPSEEK_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
 LOGIN_PATH = "/api/auth/login"
@@ -511,8 +511,8 @@ class Agent:
         """Fetch chat for the user stored in sessions.json.
 
         The API base URL can be passed directly or configured with the
-        ``SWARIF_API_URL`` environment variable. It defaults to the local Spring
-        Boot address (``http://localhost:8080``).
+        ``SWARIF_API_URL`` environment variable. It defaults to
+        ``https://api.swarif.com``.
 
         Returns ``False`` without calling the API when the session is missing or
         does not contain valid ``id`` and ``org_id`` values.

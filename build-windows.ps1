@@ -6,6 +6,7 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 $ProgressPreference = "SilentlyContinue"
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$BuildWorkPath = $null
 
 function Write-Step([string]$Message) {
     Write-Host "`n==> $Message" -ForegroundColor Cyan
@@ -157,7 +158,12 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "Could not install project requirements." }
 
     Write-Step "Compiling Swarif.exe"
-    & $BuildPython -m PyInstaller --clean --noconfirm (Join-Path $PSScriptRoot "Swarif.spec")
+    $BuildWorkPath = Join-Path $env:TEMP ("swarif-pyinstaller-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $BuildWorkPath -Force | Out-Null
+    Write-Host "Using temporary build directory: $BuildWorkPath"
+    & $BuildPython -m PyInstaller --clean --noconfirm `
+        --workpath $BuildWorkPath `
+        (Join-Path $PSScriptRoot "Swarif.spec")
     if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed to build Swarif." }
 
     $Output = Join-Path $PSScriptRoot "dist\Swarif.exe"
@@ -180,6 +186,11 @@ catch {
     Write-Host "`nBuild failed: $($_.Exception.Message)" -ForegroundColor Red
     if (-not $NoPause) { Read-Host "Press Enter to close" }
     exit 1
+}
+finally {
+    if ($BuildWorkPath -and (Test-Path $BuildWorkPath)) {
+        Remove-Item $BuildWorkPath -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 if (-not $NoPause) { Read-Host "Press Enter to close" }
