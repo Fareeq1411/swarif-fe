@@ -5,6 +5,9 @@ The packaged build includes Python and every package in `requirements.txt`, so
 Python, pip, PyQt, and the OpenAI SDK do not need to be installed on the user's
 laptop.
 
+On both Windows and macOS, `Swarif.spec` generates the packaged `.env` from
+`.env.example`. It never bundles the developer's private `.env` file.
+
 Build on each target operating system; PyInstaller does not cross-compile.
 
 ```text

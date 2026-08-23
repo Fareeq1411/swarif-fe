@@ -108,9 +108,11 @@ function Ensure-InnoSetup {
     Write-Step "Installing Inno Setup"
     $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
     if (-not $Winget) { throw "Inno Setup is missing and winget is unavailable." }
-    & $Winget.Source install --exact --id JRSoftware.InnoSetup `
-        --accept-package-agreements --accept-source-agreements --silent
-    if ($LASTEXITCODE -ne 0) { throw "winget could not install Inno Setup." }
+    & $Winget.Source install --exact --id JRSoftware.InnoSetup --source winget `
+        --accept-package-agreements --accept-source-agreements --interactive
+    if ($LASTEXITCODE -ne 0) {
+        throw "winget could not install Inno Setup. Swarif.exe was compiled successfully in dist. Install Inno Setup manually, then run this script again."
+    }
     foreach ($Candidate in $Candidates) {
         if ($Candidate -and (Test-Path $Candidate)) { return $Candidate }
     }

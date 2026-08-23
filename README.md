@@ -21,6 +21,8 @@ The script performs the complete build automatically:
 - Creates the Windows installer.
 - Uses a temporary PyInstaller work directory outside the project, avoiding
   common OneDrive file-lock errors.
+- Creates the packaged `.env` directly from `.env.example`. The developer's
+  private `.env` is never bundled.
 
 The finished files are:
 
@@ -30,6 +32,10 @@ dist\SwarifSetup.exe
 ```
 
 You can distribute `SwarifSetup.exe` to Windows users.
+
+If Windows Package Manager cannot install Inno Setup, `dist\Swarif.exe` is
+still a successful application build. Install Inno Setup manually from its
+official website and run `build-windows.ps1` again to create the installer.
 
 ## Compile on macOS
 
@@ -53,6 +59,10 @@ The macOS application is created at:
 ```text
 dist/Swarif.app
 ```
+
+The shared `Swarif.spec` build configuration creates the packaged `.env`
+directly from `.env.example`, just like the Windows build. Update
+`.env.example` with the release-safe configuration before compiling.
 
 Open the compiled application with:
 

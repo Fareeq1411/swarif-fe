@@ -221,10 +221,10 @@ class Agent:
             return False
 
         user_id = session["user_id"]
-        org_id = session.get("org_id") or os.getenv("SWARIF_ORG_ID")
+        org_id = session.get("org_id")
         token = session.get("token")
         if not isinstance(org_id, str) or not org_id.strip():
-            raise RuntimeError("SWARIF_ORG_ID is missing from .env")
+            raise RuntimeError("The saved session is missing org_id. Please sign in again.")
         if not isinstance(token, str) or not token:
             raise RuntimeError("The saved session is missing its token")
 
@@ -328,9 +328,9 @@ class Agent:
         if not isinstance(user_id, str) or not user_id:
             raise RuntimeError("Login API response is missing user_id")
 
-        org_id = login_result.get("org_id") or os.getenv("SWARIF_ORG_ID")
+        org_id = login_result.get("org_id")
         if not isinstance(org_id, str) or not org_id.strip():
-            raise RuntimeError("SWARIF_ORG_ID is missing from .env")
+            raise RuntimeError("Login API response is missing org_id")
 
         user_endpoint = (
             f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"

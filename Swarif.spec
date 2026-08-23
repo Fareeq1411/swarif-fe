@@ -1,11 +1,18 @@
 # Build with: pyinstaller --clean --noconfirm Swarif.spec
 import sys
+import shutil
+import tempfile
+from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 
 datas = collect_data_files("qtawesome")
 datas.append((".env.example", "."))
+runtime_config_dir = Path(tempfile.mkdtemp(prefix="swarif-runtime-config-"))
+runtime_env = runtime_config_dir / ".env"
+shutil.copyfile(Path(SPECPATH) / ".env.example", runtime_env)
+datas.append((str(runtime_env), "."))
 
 a = Analysis(
     ["app.py"],
