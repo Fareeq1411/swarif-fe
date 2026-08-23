@@ -1025,10 +1025,10 @@ class ConnectionLogDialog(QDialog):
 
 
 class SettingsPanel(QFrame):
-    saved = pyqtSignal(str, int)
+    saved = pyqtSignal(str, int, bool)
     connection_log_requested = pyqtSignal()
 
-    def __init__(self, agent_ip="", server_port=8767, parent=None):
+    def __init__(self, agent_ip="", server_port=8767, agent_is_local=False, parent=None):
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         layout = QVBoxLayout(self)
@@ -1049,6 +1049,10 @@ class SettingsPanel(QFrame):
         self.agent_ip.setObjectName("settingsInput")
         self.agent_ip.setPlaceholderText("e.g. 192.168.1.50")
         self.agent_ip.returnPressed.connect(self.save)
+        self.local_agent = QCheckBox("Use localhost")
+        self.local_agent.setObjectName("settingsCheckbox")
+        self.local_agent.setChecked(bool(agent_is_local))
+        self.local_agent.toggled.connect(self.set_local_agent)
         port_label = QLabel("Agent port")
         port_label.setObjectName("fieldLabel")
         self.server_port = QLineEdit(str(server_port or 8767))
@@ -1067,6 +1071,7 @@ class SettingsPanel(QFrame):
 
         layout.addWidget(label)
         layout.addWidget(self.agent_ip)
+        layout.addWidget(self.local_agent)
         layout.addSpacing(6)
         layout.addWidget(port_label)
         layout.addWidget(self.server_port)
@@ -1102,18 +1107,21 @@ class SettingsPanel(QFrame):
         layout.addWidget(setup_local_llm)
         layout.addWidget(self.local_llm_feedback)
         layout.addStretch()
+        self.set_local_agent(self.local_agent.isChecked())
 
     def save(self):
-        value = self.agent_ip.text().strip()
-        try:
-            ipaddress.IPv4Address(value)
-        except ValueError:
-            self.feedback.setText("Enter a valid IPv4 address.")
-            self.feedback.setProperty("error", True)
-            self.feedback.style().unpolish(self.feedback)
-            self.feedback.style().polish(self.feedback)
-            self.feedback.show()
-            return
+        is_local = self.local_agent.isChecked()
+        value = "127.0.0.1" if is_local else self.agent_ip.text().strip()
+        if not is_local:
+            try:
+                ipaddress.IPv4Address(value)
+            except ValueError:
+                self.feedback.setText("Enter a valid IPv4 address.")
+                self.feedback.setProperty("error", True)
+                self.feedback.style().unpolish(self.feedback)
+                self.feedback.style().polish(self.feedback)
+                self.feedback.show()
+                return
         try:
             port = int(self.server_port.text().strip())
             if not 1 <= port <= 65535:
@@ -1125,7 +1133,14 @@ class SettingsPanel(QFrame):
             self.feedback.style().polish(self.feedback)
             self.feedback.show()
             return
-        self.saved.emit(value, port)
+        self.saved.emit(value, port, is_local)
+
+    def set_local_agent(self, is_local):
+        self.agent_ip.setDisabled(bool(is_local))
+        if is_local:
+            self.agent_ip.setPlaceholderText("127.0.0.1")
+        else:
+            self.agent_ip.setPlaceholderText("e.g. 192.168.1.50")
 
     def show_saved(self):
         self.feedback.setText("Agent connection settings saved.")
@@ -1367,10 +1382,11 @@ class SwarifWindow(QWidget):
         settings = SettingsPanel(
             session.get("agent_ip", ""),
             session.get("server_port", 8767),
+            session.get("agent_is_local", False),
         )
         settings.saved.connect(
-            lambda agent_ip, server_port: self.save_agent_connection(
-                agent_ip, server_port, settings
+            lambda agent_ip, server_port, agent_is_local: self.save_agent_connection(
+                agent_ip, server_port, agent_is_local, settings
             )
         )
         settings.connection_log_requested.connect(self.show_connection_log)
@@ -1396,10 +1412,14 @@ class SwarifWindow(QWidget):
         self._connection_log_dialog.raise_()
         self._connection_log_dialog.activateWindow()
 
-    def save_agent_connection(self, agent_ip, server_port, panel):
+    def save_agent_connection(self, agent_ip, server_port, agent_is_local, panel):
         try:
             Agent.update_session(
-                {"agent_ip": agent_ip, "server_port": server_port}
+                {
+                    "agent_ip": agent_ip,
+                    "server_port": server_port,
+                    "agent_is_local": bool(agent_is_local),
+                }
             )
         except (ValueError, RuntimeError, OSError) as error:
             log(error)
@@ -1469,6 +1489,7 @@ class SwarifWindow(QWidget):
 
         agent_ip = session.get("agent_ip")
         user_id = session.get("user_id") or session.get("id")
+        agent_is_local = session.get("agent_is_local") is True
         if not isinstance(agent_ip, str) or not agent_ip.strip():
             QMessageBox.warning(
                 self,
@@ -1485,7 +1506,16 @@ class SwarifWindow(QWidget):
             return
 
         system = platform.system()
-        if system == "Windows":
+        if agent_is_local:
+            if system == "Windows":
+                folder = rf"C:\ProgramData\Swarif\Files\{user_id.strip()}"
+            elif system == "Darwin":
+                folder = os.path.join(
+                    "/Library/Application Support/Swarif/Files", user_id.strip()
+                )
+            else:
+                folder = os.path.join("/var/lib/swarif/files", user_id.strip())
+        elif system == "Windows":
             folder = rf"\\{agent_ip.strip()}\swarif\{user_id.strip()}"
         else:
             folder = f"smb://{agent_ip.strip()}/swarif/{user_id.strip()}"

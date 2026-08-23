@@ -11,5 +11,7 @@
   "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
   "type": "user",
   "remember_me": true,
-  "expires_at": "2026-08-30T03:26:02.462216+00:00"
+  "expires_at": "2026-08-30T03:26:02.462216+00:00",
+  "agent_ip": "127.0.0.1",
+  "server_port": 8767
 }
