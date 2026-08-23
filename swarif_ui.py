@@ -1478,24 +1478,7 @@ class SwarifWindow(QWidget):
             return
 
         system = platform.system()
-        if is_local_agent_ip(agent_ip.strip()):
-            if system == "Windows":
-                folder = r"C:\ProgramData\Swarif\Files"
-            elif system == "Darwin":
-                folder = "/Library/Application Support/Swarif/Files"
-            else:
-                folder = "/var/lib/swarif/files"
-            folder = os.path.join(folder, str(user_id))
-        else:
-            folder = f"//{agent_ip.strip()}/swarif/{user_id}"
-
-        if not os.path.isdir(folder):
-            QMessageBox.warning(
-                self,
-                "Files folder not found",
-                f"The Swarif files folder could not be found:\n{folder}",
-            )
-            return
+        folder = f"//{agent_ip.strip()}/swarif/{user_id}"
 
         try:
             if system == "Darwin":

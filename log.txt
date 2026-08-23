@@ -6504,3 +6504,63 @@ Traceback (most recent call last):
     raise RuntimeError(f"Job API returned HTTP {error.code}: {message}") from error
 RuntimeError: Job API returned HTTP 502: HTTP Error 502: Bad Gateway
 [2026-08-23T02:29:38.252980+00:00] Job API returned HTTP 502: HTTP Error 502: Bad Gateway
+[2026-08-23T03:17:26.728809+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 333, in login
+    raise RuntimeError("Login API response is missing org_id")
+RuntimeError: Login API response is missing org_id
+[2026-08-23T03:24:35.599912+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 333, in login
+    raise RuntimeError("Login API response is missing org_id")
+RuntimeError: Login API response is missing org_id
+[2026-08-23T03:24:38.137921+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 333, in login
+    raise RuntimeError("Login API response is missing org_id")
+RuntimeError: Login API response is missing org_id
+[2026-08-23T03:24:40.903552+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 306, in login
+    with urlopen(request, timeout=10) as response:
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/Library/Frameworks/Python.framework/Versions/3.12/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 401: 
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 314, in login
+    raise RuntimeError(message) from error
+RuntimeError: Invalid email or password
+[2026-08-23T03:24:44.417954+00:00] Traceback (most recent call last):
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/error_logger.py", line 47, in wrapped
+    return function(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/fareeqshahfitri/Desktop/Self_Project/swarif/front-agent/agent.py", line 333, in login
+    raise RuntimeError("Login API response is missing org_id")
+RuntimeError: Login API response is missing org_id

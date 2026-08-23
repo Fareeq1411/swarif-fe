@@ -1,29 +1,5 @@
 [
   {
-    "id": "ad9fbbbe-eebd-43b9-af41-347f016df21e",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "out",
-    "message": "I'm sorry, but the job to submit all purchase orders from the Excel file to the ERP invoice section failed. No invoices were submitted because the form field mapping was incomplete and there was no verification method available to confirm the submissions. If you'd like, please provide the correct field mappings or any verification details so I can help you retry.",
-    "created_time": "2026-08-21T08:57:03.000Z"
-  },
-  {
-    "id": "2f1af9e9-d434-403e-957d-b35761f0cc13",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "in",
-    "message": "okay redo the submission invoice",
-    "created_time": "2026-08-21T09:10:37.000Z"
-  },
-  {
-    "id": "ae84ec5c-a1eb-4059-96c4-8a6ec464b746",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "out",
-    "message": "The job to redo the submission invoice has been submitted successfully. I won't resubmit it; you'll be notified once it's complete.",
-    "created_time": "2026-08-21T09:11:21.000Z"
-  },
-  {
     "id": "56df7e3a-9815-4004-97fa-ea2a0c9f3b27",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
@@ -165,20 +141,22 @@
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "in",
     "message": "in scenario_3 , theres purchase order, supplier order and goods recevied excel, Compare the Purchase Orders, Supplier Invoices, and Goods Received files. Match the records and find any differences or mistakes. Create an Excel report showing which records match and which have issues.",
-    "created_time": "2026-08-23T02:32:40.096443+00:00"
+    "created_time": "2026-08-23T02:32:40.000Z"
   },
   {
     "id": "1f242be6-2dec-41d1-ada1-f13861ee3cd1",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "out",
-    "message": "Your request to compare the Purchase Orders, Supplier Invoices, and Goods Received files in scenario_3 and create an Excel report showing which records match and which have issues has been submitted successfully. I won't resubmit it."
+    "message": "Your request to compare the Purchase Orders, Supplier Invoices, and Goods Received files in scenario_3 and create an Excel report showing which records match and which have issues has been submitted successfully. I won't resubmit it.",
+    "created_time": "2026-08-23T02:33:05.000Z"
   },
   {
     "id": "1e9fe432-e054-4b12-9c90-18fbd6d61618",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "out",
-    "message": "Your comparison report is ready: comparison_report.xlsx with Summary, Matched Records, and Unmatched Records tabs. Results: 466 matched records, 170 with issues, 296 clean, and 69 unmatched. Let me know if you need any further analysis."
+    "message": "Your comparison report is ready: comparison_report.xlsx with Summary, Matched Records, and Unmatched Records tabs. Results: 466 matched records, 170 with issues, 296 clean, and 69 unmatched. Let me know if you need any further analysis.",
+    "created_time": "2026-08-23T02:44:37.000Z"
   }
 ]
