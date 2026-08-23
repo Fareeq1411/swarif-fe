@@ -1476,15 +1476,25 @@ class SwarifWindow(QWidget):
                 "You need to connect with the remote server first. Add the agent IP address in Settings.",
             )
             return
+        if not isinstance(user_id, str) or not user_id.strip():
+            QMessageBox.warning(
+                self,
+                "Unable to open Files",
+                "The signed-in session is missing the user ID.",
+            )
+            return
 
         system = platform.system()
-        folder = f"//{agent_ip.strip()}/swarif/{user_id}"
+        if system == "Windows":
+            folder = rf"\\{agent_ip.strip()}\swarif\{user_id.strip()}"
+        else:
+            folder = f"smb://{agent_ip.strip()}/swarif/{user_id.strip()}"
 
         try:
             if system == "Darwin":
                 subprocess.Popen(["open", folder])
             elif system == "Windows":
-                subprocess.Popen(["explorer", folder])
+                subprocess.Popen(["explorer.exe", folder])
             else:
                 subprocess.Popen(["xdg-open", folder])
         except OSError as error:
