@@ -22,9 +22,6 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]
 Source: "dist\Swarif.exe"; DestDir: "{app}"; Flags: ignoreversion
-Source: "build-assets\model_bundle\model.gguf"; DestDir: "{localappdata}\Swarif\model_bundle"; Flags: ignoreversion
-Source: "build-assets\model_bundle\Modelfile"; DestDir: "{localappdata}\Swarif\model_bundle"; Flags: ignoreversion
-Source: "build-assets\model_bundle\model-name.txt"; DestDir: "{localappdata}\Swarif\model_bundle"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\Swarif"; Filename: "{app}\{#MyAppExeName}"

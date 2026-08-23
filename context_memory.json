@@ -4,12 +4,12 @@
     {
       "step_no": 1,
       "step": "decide_action",
-      "summary": "Inspected the user's Swarif Files folder; found 10 entries."
+      "summary": "Inspected the user's Swarif Files folder; found 12 entries."
     },
     {
       "step_no": 2,
       "step": "decide_action",
-      "summary": "The user requested opening scenario_2, analyzing the CSV data it contains, and producing a comprehensive PDF report. The workspace contains a scenario_2 folder with a single CSV file. The task is clear and all resources are available in the workspace, so I am submitting the job."
+      "summary": "The task is clear: compare three Excel files in the workspace (purchase orders, supplier invoices, goods received) and produce an Excel report of matches and issues. All required files exist in the user's folder, so I am submitting the job with detailed instructions."
     }
   ],
   "step_count": 2

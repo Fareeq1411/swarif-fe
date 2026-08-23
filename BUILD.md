@@ -23,15 +23,9 @@ For a one-command Windows build, right-click `build-windows.ps1` and choose
 powershell -ExecutionPolicy Bypass -File .\build-windows.ps1
 ```
 
-The script installs Python 3.12, Ollama, and Inno Setup when necessary. It
-downloads/exports the configured `OLLAMA_MODEL`, builds the application, and
-produces `dist\SwarifSetup.exe`. The setup executable includes `Swarif.exe`, a
-portable GGUF model, and its Modelfile. On first startup Swarif imports that
-model into Ollama and removes the temporary installer copy after successful
-registration.
+The script installs Python 3.12 and Inno Setup when necessary, creates the
+isolated build environment, installs all build dependencies, and produces
+`dist\SwarifSetup.exe`. A local LLM is optional and is not bundled.
 
 Outputs are written under `dist/`. Sign and notarize the macOS application and
-code-sign the Windows executable before distribution. The application startup
-screen handles Ollama installation, service startup, model download, and model
-loading. Ollama installation and model downloads require internet access and
-sufficient disk space; macOS may display its normal administrator prompt.
+code-sign the Windows executable before distribution.

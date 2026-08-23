@@ -96,84 +96,6 @@ function Install-Python312 {
     }
 }
 
-function Find-Ollama {
-    $Command = Get-Command ollama.exe -ErrorAction SilentlyContinue
-    if ($Command -and $Command.Source -notmatch "\\WindowsApps\\") {
-        return $Command.Source
-    }
-    $Candidate = Join-Path $env:LocalAppData "Programs\Ollama\ollama.exe"
-    if (Test-Path $Candidate) { return $Candidate }
-    return $null
-}
-
-function Ensure-OllamaForBuild {
-    $Ollama = Find-Ollama
-    if ($Ollama) { return $Ollama }
-    Write-Step "Installing Ollama for the offline model export"
-    $Winget = Get-Command winget.exe -ErrorAction SilentlyContinue
-    if (-not $Winget) {
-        throw "Ollama is missing and winget is unavailable. Install Ollama, then run this script again."
-    }
-    & $Winget.Source install --exact --id Ollama.Ollama --scope user `
-        --accept-package-agreements --accept-source-agreements --silent
-    if ($LASTEXITCODE -ne 0) { throw "winget could not install Ollama." }
-    $Ollama = Find-Ollama
-    if (-not $Ollama) { throw "Ollama was installed but ollama.exe could not be located." }
-    return $Ollama
-}
-
-function Export-OfflineModel([string]$Ollama, [string]$Model) {
-    Write-Step "Preparing offline Ollama model: $Model"
-    & $Ollama list *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Start-Process -FilePath $Ollama -ArgumentList "serve" -WindowStyle Hidden | Out-Null
-        $Ready = $false
-        foreach ($Attempt in 1..30) {
-            Start-Sleep -Seconds 1
-            & $Ollama list *> $null
-            if ($LASTEXITCODE -eq 0) { $Ready = $true; break }
-        }
-        if (-not $Ready) { throw "Ollama did not start on the build laptop." }
-    }
-    & $Ollama show $Model *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "The model is not installed on this build laptop; downloading it now."
-        & $Ollama pull $Model
-        if ($LASTEXITCODE -ne 0) { throw "Ollama could not download $Model." }
-    }
-
-    $ModelfileText = (& $Ollama show --modelfile $Model | Out-String).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $ModelfileText) {
-        throw "Could not export the Modelfile for $Model."
-    }
-    $FromMatch = [regex]::Match($ModelfileText, '(?m)^FROM\s+(.+?)\s*$')
-    if (-not $FromMatch.Success) { throw "The exported Modelfile has no FROM model blob." }
-    $BlobPath = $FromMatch.Groups[1].Value.Trim().Trim('"')
-    if (-not (Test-Path $BlobPath -PathType Leaf)) {
-        throw "The Ollama model blob could not be found: $BlobPath"
-    }
-
-    $Bundle = Join-Path $PSScriptRoot "build-assets\model_bundle"
-    New-Item -ItemType Directory -Path $Bundle -Force | Out-Null
-    Copy-Item $BlobPath (Join-Path $Bundle "model.gguf") -Force
-    $PortableModelfile = [regex]::Replace(
-        $ModelfileText,
-        '(?m)^FROM\s+.+?\s*$',
-        'FROM ./model.gguf',
-        1
-    )
-    [IO.File]::WriteAllText(
-        (Join-Path $Bundle "Modelfile"),
-        $PortableModelfile + [Environment]::NewLine,
-        [Text.UTF8Encoding]::new($false)
-    )
-    [IO.File]::WriteAllText(
-        (Join-Path $Bundle "model-name.txt"),
-        $Model + [Environment]::NewLine,
-        [Text.UTF8Encoding]::new($false)
-    )
-}
-
 function Ensure-InnoSetup {
     $Candidates = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
@@ -243,18 +165,8 @@ try {
         throw "The build finished without producing dist\Swarif.exe."
     }
 
-    $Model = "qwen3:8b"
-    $EnvFile = Join-Path $PSScriptRoot ".env"
-    if (Test-Path $EnvFile) {
-        $ModelLine = Get-Content $EnvFile | Where-Object { $_ -match '^\s*OLLAMA_MODEL\s*=' } | Select-Object -First 1
-        if ($ModelLine) { $Model = ($ModelLine -split '=', 2)[1].Trim() }
-    }
-    if (-not $Model) { throw "OLLAMA_MODEL is empty." }
-    $Ollama = Ensure-OllamaForBuild
-    Export-OfflineModel $Ollama $Model
-
     $InnoCompiler = Ensure-InnoSetup
-    Write-Step "Packaging SwarifSetup.exe with the offline model"
+    Write-Step "Packaging SwarifSetup.exe"
     & $InnoCompiler (Join-Path $PSScriptRoot "SwarifSetup.iss")
     if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed to package SwarifSetup.exe." }
     $SetupOutput = Join-Path $PSScriptRoot "dist\SwarifSetup.exe"
@@ -262,7 +174,7 @@ try {
 
     Write-Host "`nBuild completed successfully:" -ForegroundColor Green
     Write-Host $SetupOutput -ForegroundColor White
-    Write-Host "This installer contains Swarif and the configured offline Ollama model."
+    Write-Host "This installer contains Swarif. A local LLM is optional and is not bundled."
 }
 catch {
     Write-Host "`nBuild failed: $($_.Exception.Message)" -ForegroundColor Red
