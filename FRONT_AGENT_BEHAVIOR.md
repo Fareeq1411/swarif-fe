@@ -90,3 +90,11 @@ workflow: keep asking about every missing material step until another worker
 could follow the process without guessing. After confirmation, finalize all
 messages since the newest `start` into one workflow, submit the learning job,
 send a completion message, and then send `end` as a separate message.
+
+Treat anything introduced as an example as illustrative, not as a fixed part of
+the learned workflow. Generalize the rule demonstrated by the example and omit
+example-specific names, URLs, filenames, paths, IDs, accounts, sample values,
+brands, and similar identifiers. Preserve a specific detail only after the user
+explicitly confirms that it is mandatory and that no alternative of that type
+is permitted. If this is unclear, ask whether it is a fixed requirement or only
+an example before finalizing the workflow.
