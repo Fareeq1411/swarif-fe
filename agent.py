@@ -25,12 +25,18 @@ GET_CHAT_PATH = "/api/client-app/get-chat"
 SEND_MESSAGE_PATH = "/api/client-app/send-message"
 FETCH_JOB_PATH = "/api/client-app/job/fetch-job"
 CREATE_JOB_PATH = "/api/client-app/job/create-job"
+LIST_CUSTOM_SKILLS_PATH = "/api/users/get/list-custom-skills"
+ALL_CUSTOM_SKILLS_PATH = "/api/users/all-custom-skills"
+LEARNING_START_MESSAGE = 'Send "start" to start teaching the AI.'
 DEFAULT_SESSION_PATH = Path(os.getenv("SESSION_PATH", "sessions.json"))
 if not DEFAULT_SESSION_PATH.is_absolute():
     DEFAULT_SESSION_PATH = Path(__file__).parent / DEFAULT_SESSION_PATH
 MEMORY_PATH = Path(os.getenv("MEMORY_PATH", "memory.md"))
 if not MEMORY_PATH.is_absolute():
     MEMORY_PATH = Path(__file__).parent / MEMORY_PATH
+BEHAVIOR_PATH = Path(os.getenv("BEHAVIOR_PATH", "FRONT_AGENT_BEHAVIOR.md"))
+if not BEHAVIOR_PATH.is_absolute():
+    BEHAVIOR_PATH = Path(__file__).parent / BEHAVIOR_PATH
 CONTEXT_MEMORY_PATH = Path(os.getenv("CONTEXT_MEMORY_PATH", "context_memory.json"))
 if not CONTEXT_MEMORY_PATH.is_absolute():
     CONTEXT_MEMORY_PATH = Path(__file__).parent / CONTEXT_MEMORY_PATH
@@ -47,6 +53,17 @@ SESSION_FILE_LOCK = threading.RLock()
 
 @log_static_methods
 class Agent:
+    @staticmethod
+    def _report_step(response, on_step, fallback="Thinking"):
+        """Emit a safe one-to-five-word summary for the current agent step."""
+        if on_step is None:
+            return
+        summary = response.get("short_summary") if isinstance(response, dict) else None
+        if not isinstance(summary, str) or not summary.strip():
+            summary = fallback
+        words = summary.strip().split()
+        on_step(" ".join(words[:5]) or "Thinking")
+
     @staticmethod
     def user_files_path(session_path=None):
         """Return the current user's platform-specific Swarif Files directory."""
@@ -636,7 +653,116 @@ class Agent:
         return jobs
 
     @staticmethod
-    def submit_job(title, task, extra_data, base_url=None, timeout=10, session_path=None):
+    def fetch_user_jobs(limit=50):
+        """Fetch active and inactive jobs for the currently signed-in user."""
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+            raise ValueError("limit must be a positive integer")
+        session = Agent.read_session()
+        if session is False:
+            return False
+        user_id = session.get("user_id") or session.get("id")
+        if not isinstance(user_id, str) or not user_id.strip():
+            raise RuntimeError("The signed-in session is missing user_id")
+        return {
+            "user_id": user_id.strip(),
+            "active_jobs": Agent.fetch_jobs("active", limit=limit),
+            "inactive_jobs": Agent.fetch_jobs("inactive", limit=limit),
+            "visibility_note": (
+                "The fetch-job API only returns jobs more than 15 seconds after "
+                "their creation time. A newer job may be submitted but not visible yet."
+            ),
+        }
+
+    @staticmethod
+    def _fetch_custom_skills(path, response_name):
+        """Fetch an organization-scoped custom-skills list from the API."""
+        session = Agent.read_session()
+        if session is False:
+            return False
+        org_id = session.get("org_id")
+        if not isinstance(org_id, str) or not org_id.strip():
+            raise RuntimeError("The signed-in session is missing org_id")
+
+        endpoint = (
+            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{path}"
+        )
+        request = Request(
+            endpoint,
+            data=json.dumps({"org_id": org_id.strip()}).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=10) as response:
+                result = json.load(response)
+        except HTTPError as error:
+            try:
+                error_body = json.loads(error.read().decode("utf-8"))
+                message = error_body.get("message", str(error))
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                message = str(error)
+            raise RuntimeError(
+                f"Custom skills API returned HTTP {error.code}: {message}"
+            ) from error
+        except URLError as error:
+            raise ConnectionError(
+                f"Could not connect to the custom skills API at {endpoint}: {error.reason}"
+            ) from error
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Custom skills API returned invalid JSON") from error
+
+        if not isinstance(result, list) or not all(
+            isinstance(item, dict) for item in result
+        ):
+            raise RuntimeError(
+                f"Custom skills API response is not a valid {response_name} list"
+            )
+        return result
+
+    @staticmethod
+    def list_custom_skills():
+        """Return custom-skill titles belonging to the signed-in organization."""
+        return Agent._fetch_custom_skills(
+            LIST_CUSTOM_SKILLS_PATH,
+            "skill title",
+        )
+
+    @staticmethod
+    def read_custom_skills(titles=None):
+        """Return full custom-skill definitions, optionally filtered by title."""
+        if titles is not None:
+            if not isinstance(titles, list) or not all(
+                isinstance(title, str) and title.strip() for title in titles
+            ):
+                raise ValueError("titles must be a list of non-empty strings")
+            wanted_titles = {title.strip().casefold() for title in titles}
+        else:
+            wanted_titles = None
+
+        skills = Agent._fetch_custom_skills(
+            ALL_CUSTOM_SKILLS_PATH,
+            "custom skill",
+        )
+        if skills is False or wanted_titles is None:
+            return skills
+        return [
+            skill
+            for skill in skills
+            if isinstance(skill.get("title"), str)
+            and skill["title"].strip().casefold() in wanted_titles
+        ]
+
+    @staticmethod
+    def submit_job(
+        title,
+        task,
+        extra_data,
+        base_url=None,
+        timeout=10,
+        session_path=None,
+        job_type="task",
+    ):
         """Create a job for the user stored in sessions.json.
 
         Returns the created job from the API, or ``False`` when there is no valid
@@ -648,6 +774,8 @@ class Agent:
             raise ValueError("task is required")
         if extra_data is None:
             raise ValueError("extra_data is required")
+        if job_type not in {"learn", "task"}:
+            raise ValueError("job_type must be learn or task")
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise ValueError("timeout must be a positive number")
 
@@ -680,6 +808,7 @@ class Agent:
             "org_id": org_id.strip(),
             "user_id": session["id"].strip(),
             "title": title.strip(),
+            "job_type": job_type,
             "task": normalized_task,
             "extra_data": normalized_extra_data,
         }
@@ -822,13 +951,178 @@ class Agent:
         return extra_data
 
     @staticmethod
+    def read_behavior():
+        """Return the company-colleague behaviour and submission policy."""
+        try:
+            behavior = BEHAVIOR_PATH.read_text(encoding="utf-8").strip()
+        except OSError as error:
+            raise RuntimeError("Front Agent behaviour file is missing") from error
+        if not behavior:
+            raise RuntimeError("Front Agent behaviour file is empty")
+        return behavior
+
+    @staticmethod
+    def learning_history_since_start(limit=200):
+        """Return chronological chat from the newest active `start` marker."""
+        history = Agent.fetch_chat(limit)
+        if not isinstance(history, list):
+            return []
+        for index, item in enumerate(history):
+            if not isinstance(item, dict):
+                continue
+            message = item.get("message")
+            if not isinstance(message, str):
+                continue
+            marker = message.strip().casefold()
+            if marker == "end":
+                return []
+            if marker == "start" and item.get("type") == "in":
+                return list(reversed(history[: index + 1]))
+        return []
+
+    @staticmethod
+    def decide_action_learning(
+        message, org_id, user_id, should_continue=None, on_step=None
+    ):
+        """Interview the user about a company workflow during Learning mode."""
+        if should_continue is not None and not should_continue():
+            return None
+
+        learning_history = Agent.learning_history_since_start()
+        if not learning_history:
+            Agent._report_step({}, on_step, "Waiting for start")
+            return Agent.reply_message(LEARNING_START_MESSAGE)
+
+        system_prompt = {
+            "general_instruction": """
+You are a curious company worker learning how to perform a job using the
+company's specified workflow. Your purpose is to understand the workflow well
+enough that another worker can follow it without guessing or asking questions.
+
+Study every message since the latest user message whose complete text is
+"start". A newer "start" always begins a completely new teaching session.
+
+Actively identify and ask about missing details, including the workflow goal,
+trigger, responsible roles, prerequisites, inputs, tools, ordered steps,
+decision points, exceptions, approvals, expected outputs, quality checks, and
+definition of done. Be professionally curious. Ask concise, structured
+questions and continue with reply_message whenever any material step is
+missing, ambiguous, or assumed.
+
+When the workflow is complete, first provide a concise final summary and ask
+the user to confirm it. Choose generator_job only after the user's later message
+explicitly confirms that latest unchanged summary. When confirmation is clear,
+you MUST choose generator_job rather than asking for confirmation again.
+
+Follow the reply format exactly. Do not submit a normal task from this function.
+short_summary is required on every response. It must contain only 1 to 5 words
+describing what you are considering or intend to do in this step.
+            """,
+            "action_avalailble": ["reply_message", "generator_job"],
+            "action_args_format": {
+                "reply_message": {"message": ""},
+                "generator_job": {},
+            },
+            "reply_format": {
+                "next_action": "reply_message|generator_job",
+                "args": {},
+                "step_summary": "",
+                "short_summary": "1 to 5 words",
+            },
+        }
+        user_prompt = {
+            "original_prompt": message,
+            "learning_history_since_latest_start": learning_history,
+        }
+        response = Agent.generate_llm(user_prompt, system_prompt)
+        Agent._report_step(response, on_step, "Reviewing workflow")
+        if should_continue is not None and not should_continue():
+            return None
+
+        next_action = response.get("next_action", "")
+        args = response.get("args", {})
+        if next_action == "reply_message":
+            reply = args.get("message") if isinstance(args, dict) else None
+            if isinstance(reply, str) and reply.strip():
+                return Agent.reply_message(reply.strip())
+        elif next_action == "generator_job":
+            return Agent.generator_job(
+                org_id,
+                user_id,
+                should_continue=should_continue,
+                on_step=on_step,
+            )
+        return False
+
+    @staticmethod
+    def generator_job(org_id, user_id, should_continue=None, on_step=None):
+        """Finalize the latest learning session and submit one learning job."""
+        if should_continue is not None and not should_continue():
+            return None
+        learning_history = Agent.learning_history_since_start()
+        if not learning_history:
+            Agent._report_step({}, on_step, "Waiting for start")
+            return Agent.reply_message(LEARNING_START_MESSAGE)
+
+        system_prompt = {
+            "general_instruction": """
+You are the finalizer for a company workflow teaching session. Rewrite all
+useful information gathered since the latest `start` into one complete,
+self-contained flow that a worker can follow from beginning to end.
+
+Preserve the company's stated requirements. Remove conversational repetition,
+questions, confirmations, and the start marker. Do not invent missing steps.
+Write a clear ordered workflow covering purpose, prerequisites, roles, inputs,
+steps, decisions, exceptions, approvals, outputs, quality checks, and completion
+criteria whenever those details were taught. Return one flow_text string and a
+short title of fewer than 10 words. short_summary is required and must contain
+only 1 to 5 words describing this finalization step.
+            """,
+            "reply_format": {
+                "task_title": "",
+                "flow_text": "",
+                "short_summary": "1 to 5 words",
+            },
+        }
+        response = Agent.generate_llm(
+            {"learning_history_since_latest_start": learning_history},
+            system_prompt,
+        )
+        Agent._report_step(response, on_step, "Finalizing learned workflow")
+        title = response.get("task_title")
+        flow_text = response.get("flow_text")
+        if not isinstance(title, str) or not title.strip():
+            raise RuntimeError("Learning finalizer did not return a task title")
+        if not isinstance(flow_text, str) or not flow_text.strip():
+            raise RuntimeError("Learning finalizer did not return a workflow")
+        if should_continue is not None and not should_continue():
+            return None
+
+        created_job = Agent.submit_job(
+            title.strip(),
+            {"instructions": flow_text.strip()},
+            {"source": "learning_mode"},
+            job_type="learn",
+        )
+        if not created_job:
+            raise RuntimeError("The learning job was not submitted")
+
+        Agent.reply_message(
+            "I finished compiling the workflow and submitted it as a learning job."
+        )
+        Agent.reply_message("end")
+        return created_job
+
+    @staticmethod
     def decide_action(
         message,
         org_id,
         user_id,
         reset_context=True,
         tool_data=None,
+        learning_mode=False,
         should_continue=None,
+        on_step=None,
     ):
         if should_continue is not None and not should_continue():
             return None
@@ -839,6 +1133,7 @@ class Agent:
         memory = Agent.read_memory()
         context_memory = Agent.get_context_memory()
         extra_data = Agent.extra_data()
+        behavior = Agent.read_behavior()
 
         user_prompt = {
             "original_prompt" : message,
@@ -850,6 +1145,8 @@ class Agent:
         }
 
         system_prompt = {
+            "behavior_policy": behavior,
+            "learning_mode": bool(learning_mode),
             "general_instruction": """
 You are the task manager. You receive a user's task, gather everything needed
 to make it fully executable, and submit the complete task to a worker.
@@ -861,11 +1158,23 @@ the persistent_memory, chat_history_last_10, and extra_data provided:
 3. Are all required resources and details sufficient and accessible?
 4. Can I clearly imagine and describe the completed result of the task?
 
-Choose submit_job only when the answer to all four questions is yes and the
+Choose submit_job only when the answer to all four questions is yes, the
 task_prompt plus extra_data contain everything a worker needs to finish the
-task without asking the user another question. If any answer is no or
-uncertain, choose send_message and ask a concise, specific question for only
-the missing information. Never guess missing task requirements or resources.
+task without asking the user another question, and the user has explicitly
+confirmed the most recent final job summary in a later message. If the job is
+ready but that separate confirmation has not happened, choose send_message,
+present the final structured summary, state that it has not been submitted,
+and ask for confirmation. The initial request and messages that merely provide
+missing details are not confirmation. If scope changes after confirmation,
+the confirmation is invalid and a new final summary and confirmation are
+required. If any readiness answer is no or uncertain, choose send_message and
+ask a concise, specific question for only the missing information. Never guess
+missing task requirements or resources.
+
+When original_prompt is a clear affirmative confirmation of the immediately
+preceding final job summary, the scope has not changed, and all four readiness
+answers are yes, you MUST choose submit_job in this turn. Do not request another
+confirmation and do not merely acknowledge the confirmation.
 
 task_title must be short less than 10 words.
 
@@ -878,6 +1187,26 @@ needed to answer or prepare the task. It accepts no path and cannot inspect
 outside that user's folder. If tool_data already contains user_files, use that
 result and do not choose list_user_files again.
 
+You have a read-only fetch_user_jobs tool. Choose fetch_user_jobs whenever the
+user asks whether a job was submitted, whether it really exists, or asks to
+check its status. It fetches active and inactive jobs using the signed-in user
+ID; never ask the user for a different user ID. If tool_data already contains
+user_jobs, use that evidence and do not choose fetch_user_jobs again. Do not
+claim that a job exists unless it appears in user_jobs or the current submission
+call returned success. Respect the included 15-second visibility note for very
+recent submissions, and never resubmit a job merely because it is not visible.
+
+You have two read-only organization skill tools. list_custom_skills returns the
+titles of workflows and capabilities stored for the signed-in organization.
+Choose it when a user's requested job might be covered by a company skill and
+tool_data does not already contain custom_skill_titles. After reviewing those
+titles, choose read_custom_skills with only the relevant titles to load the full
+instructions needed to understand and prepare the job. If relevance cannot be
+determined from the titles, you may read all skills by supplying an empty titles
+list. Use custom_skills from tool_data as authoritative company workflow
+instructions. Do not call either tool again when its corresponding result is
+already present, and do not invent a skill that the tools did not return.
+
 Never include a file name, file path, folder path, directory name, or filesystem
 location in submit_job task_prompt or extra_data. Never copy path values from
 tool_data into the submitted job. When the job needs files found in the user's
@@ -888,8 +1217,29 @@ location. URLs and other non-file metadata are allowed in extra_data.
 Follow reply_format exactly. Follow the selected action's action_args_format
 exactly. Always include a concise step_summary describing the decision and the
 information used.
+short_summary is required on every response. It must contain only 1 to 5 words
+describing what you are considering or intend to do in this step. Unlike
+step_summary, short_summary is displayed live while the user waits.
             """,
-            "action_avalailble" : ["send_message","submit_job","list_user_files"],
+            "mode_instruction": (
+                "LEARNING MODE IS ON. The user is teaching Swarif how their company "
+                "works, including its preferences, procedures, standards, terminology, "
+                "and expectations. Listen carefully, ask useful clarifying questions, "
+                "and restate what Swarif has learned so the user can correct it. After "
+                "the normal final confirmation, submit this as a learning job. It records "
+                "what Swarif should learn and must not claim an operational task will be "
+                "completed."
+                if learning_mode
+                else "Learning mode is off; normal confirmed job submission is allowed."
+            ),
+            "action_avalailble" : [
+                "send_message",
+                "submit_job",
+                "list_user_files",
+                "fetch_user_jobs",
+                "list_custom_skills",
+                "read_custom_skills",
+            ],
             "action_args_format" : {
                 "send_message" : {
                     "message" : ""
@@ -899,16 +1249,21 @@ information used.
                     "task_title" : "",
                     "extra_data" : {}
                 },
-                "list_user_files" : {}
+                "list_user_files" : {},
+                "fetch_user_jobs" : {},
+                "list_custom_skills" : {},
+                "read_custom_skills" : {"titles": []}
             },
             "reply_format": {
-                "next_action" : "send_message|submit_job|list_user_files",
+                "next_action" : "send_message|submit_job|list_user_files|fetch_user_jobs|list_custom_skills|read_custom_skills",
                 "args" : {},
-                "step_summary":""
+                "step_summary":"",
+                "short_summary":"1 to 5 words"
             }
         }
 
         response = Agent.generate_llm(user_prompt, system_prompt)
+        Agent._report_step(response, on_step, "Reviewing request")
 
         if should_continue is not None and not should_continue():
             return None
@@ -929,7 +1284,13 @@ information used.
             job_extra_data = args.get("extra_data", {})
             if should_continue is not None and not should_continue():
                 return None
-            is_success = Agent.submit_job(title, task, job_extra_data)
+            job_type = "learn" if learning_mode else "task"
+            is_success = Agent.submit_job(
+                title,
+                task,
+                job_extra_data,
+                job_type=job_type,
+            )
 
             if is_success:
                 Agent.update_context_memory(
@@ -937,11 +1298,14 @@ information used.
                     step_summary or "The complete task was submitted successfully.",
                 )
                 return Agent.decide_action(
-                    "System: The job was submitted successfully. Inform the user without submitting it again.",
+                    f"System: The {job_type} job was submitted successfully. Inform "
+                    "the user without submitting it again.",
                     org_id,
                     user_id,
                     reset_context=False,
+                    learning_mode=learning_mode,
                     should_continue=should_continue,
+                    on_step=on_step,
                 )
         elif next_action == "list_user_files":
             if should_continue is not None and not should_continue():
@@ -956,8 +1320,74 @@ information used.
                 org_id,
                 user_id,
                 reset_context=False,
-                tool_data={"user_files": user_files},
+                tool_data={**(tool_data or {}), "user_files": user_files},
+                learning_mode=learning_mode,
                 should_continue=should_continue,
+                on_step=on_step,
+            )
+        elif next_action == "fetch_user_jobs":
+            if should_continue is not None and not should_continue():
+                return None
+            user_jobs = Agent.fetch_user_jobs()
+            active_count = len(user_jobs["active_jobs"]) if user_jobs else 0
+            inactive_count = len(user_jobs["inactive_jobs"]) if user_jobs else 0
+            Agent.update_context_memory(
+                "decide_action",
+                f"Checked signed-in user jobs; found {active_count} active and "
+                f"{inactive_count} inactive jobs.",
+            )
+            return Agent.decide_action(
+                message,
+                org_id,
+                user_id,
+                reset_context=False,
+                tool_data={**(tool_data or {}), "user_jobs": user_jobs},
+                learning_mode=learning_mode,
+                should_continue=should_continue,
+                on_step=on_step,
+            )
+        elif next_action == "list_custom_skills":
+            if should_continue is not None and not should_continue():
+                return None
+            skill_titles = Agent.list_custom_skills()
+            Agent.update_context_memory(
+                "decide_action",
+                f"Checked company skills; found {len(skill_titles) if skill_titles else 0} titles.",
+            )
+            return Agent.decide_action(
+                message,
+                org_id,
+                user_id,
+                reset_context=False,
+                tool_data={
+                    **(tool_data or {}),
+                    "custom_skill_titles": skill_titles or [],
+                },
+                learning_mode=learning_mode,
+                should_continue=should_continue,
+                on_step=on_step,
+            )
+        elif next_action == "read_custom_skills":
+            if should_continue is not None and not should_continue():
+                return None
+            requested_titles = args.get("titles", []) if isinstance(args, dict) else []
+            custom_skills = Agent.read_custom_skills(requested_titles or None)
+            Agent.update_context_memory(
+                "decide_action",
+                f"Read {len(custom_skills) if custom_skills else 0} company skill definitions.",
+            )
+            return Agent.decide_action(
+                message,
+                org_id,
+                user_id,
+                reset_context=False,
+                tool_data={
+                    **(tool_data or {}),
+                    "custom_skills": custom_skills or [],
+                },
+                learning_mode=learning_mode,
+                should_continue=should_continue,
+                on_step=on_step,
             )
 
         return False

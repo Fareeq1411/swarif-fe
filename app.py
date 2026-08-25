@@ -21,7 +21,7 @@ class SwarifBackend(QObject):
     chat_file_changed = pyqtSignal()
     backend_error = pyqtSignal(str)
     jobs_changed = pyqtSignal(list, list)
-    agent_typing_changed = pyqtSignal(bool)
+    agent_typing_changed = pyqtSignal(bool, str)
 
     def __init__(self, window, poll_interval_ms=750):
         super().__init__(window)
@@ -35,6 +35,7 @@ class SwarifBackend(QObject):
         self._agent_sequence = 0
         self._agent_revision = 0
         self._agent_worker = None
+        self._learning_mode = bool(window.learning_mode)
         self._job_poll_lock = threading.Lock()
         self._job_poll_in_flight = False
 
@@ -43,6 +44,7 @@ class SwarifBackend(QObject):
         self.backend_error.connect(self.report_error)
         self.jobs_changed.connect(self.window.update_jobs)
         self.agent_typing_changed.connect(self.window.set_agent_typing)
+        self.window.learning_mode_changed.connect(self.set_learning_mode)
 
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(poll_interval_ms)
@@ -197,7 +199,7 @@ class SwarifBackend(QObject):
 
         # Required order: local chat first, database second, agent third.
         Agent.append_local_chat(provisional)
-        self.agent_typing_changed.emit(True)
+        self.agent_typing_changed.emit(True, "Thinking")
         self.chat_file_changed.emit()
 
         sequence = self._register_agent_message(message, org_id.strip(), user_id)
@@ -219,6 +221,7 @@ class SwarifBackend(QObject):
                 "org_id": org_id,
                 "user_id": user_id,
                 "ready": False,
+                "learning_mode": self._learning_mode,
             }
             self._agent_condition.notify_all()
         return sequence
@@ -275,13 +278,28 @@ class SwarifBackend(QObject):
                 with self._agent_condition:
                     return revision == self._agent_revision
 
+            def show_step(short_summary):
+                if still_current():
+                    self.agent_typing_changed.emit(True, short_summary)
+
             try:
-                Agent.decide_action(
-                    combined_prompt,
-                    items[-1]["org_id"],
-                    items[-1]["user_id"],
-                    should_continue=still_current,
-                )
+                if items[-1]["learning_mode"]:
+                    Agent.decide_action_learning(
+                        combined_prompt,
+                        items[-1]["org_id"],
+                        items[-1]["user_id"],
+                        should_continue=still_current,
+                        on_step=show_step,
+                    )
+                else:
+                    Agent.decide_action(
+                        combined_prompt,
+                        items[-1]["org_id"],
+                        items[-1]["user_id"],
+                        learning_mode=False,
+                        should_continue=still_current,
+                        on_step=show_step,
+                    )
             except (ValueError, RuntimeError, ConnectionError) as error:
                 if still_current():
                     self._send_failure_reply(
@@ -298,7 +316,17 @@ class SwarifBackend(QObject):
                 idle = not self._agent_messages
                 self._agent_condition.notify_all()
             if idle:
-                self.agent_typing_changed.emit(False)
+                self.agent_typing_changed.emit(False, "Thinking")
+
+    def set_learning_mode(self, enabled):
+        """Apply mode changes to queued work and invalidate an in-flight decision."""
+        with self._agent_condition:
+            self._learning_mode = bool(enabled)
+            if self._agent_messages:
+                self._agent_revision += 1
+                for item in self._agent_messages.values():
+                    item["learning_mode"] = self._learning_mode
+                self._agent_condition.notify_all()
 
     def _store_and_decide(self, provisional, org_id, user_id, sequence):
         stored_message = None
@@ -325,7 +353,7 @@ class SwarifBackend(QObject):
             with self._agent_condition:
                 idle = not self._agent_messages
             if idle:
-                self.agent_typing_changed.emit(False)
+                self.agent_typing_changed.emit(False, "Thinking")
 
     @staticmethod
     def _send_failure_reply(error, org_id, user_id, user_message=None):

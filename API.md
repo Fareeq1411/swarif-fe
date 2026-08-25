@@ -1,6 +1,6 @@
 # Swarif Backend API
 
-Last updated: 11 August 2026
+Last updated: 25 August 2026
 
 All endpoints accept and return JSON. Generated database IDs are created by the application and checked against all current ID-bearing tables. Clients must not provide IDs for newly created records.
 
@@ -29,7 +29,8 @@ User login success — `200 OK`:
 ```json
 {
   "token": "jwt-token",
-  "user_id": "user-id"
+  "user_id": "user-id",
+  "org_id": "organization-id"
 }
 ```
 
@@ -245,6 +246,89 @@ Errors:
 - `404 Not Found` when the user does not belong to the organization or does not exist.
 - `409 Conflict` when the update violates a database constraint, such as duplicate email.
 
+### Save custom skill
+
+`POST /api/users/save/custom-skills`
+
+Creates a custom skill for an organization. The backend generates `id`; the database generates the timestamps.
+
+Request:
+
+```json
+{
+  "org_id": "organization-id",
+  "title": "Support",
+  "skills": "Answer customer support questions clearly and concisely."
+}
+```
+
+Success — `201 Created`:
+
+```json
+{
+  "id": "generated-skill-id",
+  "org_id": "organization-id",
+  "title": "Support",
+  "skills": "Answer customer support questions clearly and concisely.",
+  "created_at": "2026-08-25T00:00:00.000+00:00",
+  "updated_at": "2026-08-25T00:00:00.000+00:00"
+}
+```
+
+Returns `400 Bad Request` when a required field is missing or the record cannot be saved.
+
+### List custom skill titles
+
+`POST /api/users/get/list-custom-skills`
+
+Request:
+
+```json
+{
+  "org_id": "organization-id"
+}
+```
+
+Success — `200 OK`:
+
+```json
+[
+  { "title": "Support" },
+  { "title": "Sales" }
+]
+```
+
+Only titles belonging to the supplied organization are returned. Returns `400 Bad Request` when `org_id` is missing.
+
+### Get all custom skills
+
+`POST /api/users/all-custom-skills`
+
+Request:
+
+```json
+{
+  "org_id": "organization-id"
+}
+```
+
+Success — `200 OK`:
+
+```json
+[
+  {
+    "id": "skill-id",
+    "org_id": "organization-id",
+    "title": "Support",
+    "skills": "Answer customer support questions clearly and concisely.",
+    "created_at": "2026-08-25T00:00:00.000+00:00",
+    "updated_at": "2026-08-25T00:00:00.000+00:00"
+  }
+]
+```
+
+Every database field is returned, scoped to the supplied organization. Returns `400 Bad Request` when `org_id` is missing.
+
 ## Client application
 
 ### Send message
@@ -353,6 +437,7 @@ Success — `200 OK`:
       "org_id": "organization-id",
       "user_id": "user-id",
       "title": "Reply to customer",
+      "job_type": "task",
       "task": "{}",
       "response": "{}",
       "token": 0,
@@ -386,6 +471,7 @@ Request:
   "org_id": "organization-id",
   "user_id": "user-id",
   "title": "Reply to customer",
+  "job_type": "task",
   "task": {
     "action": "reply"
   },
@@ -403,6 +489,7 @@ Success — `201 Created`:
   "org_id": "organization-id",
   "user_id": "user-id",
   "title": "Reply to customer",
+  "job_type": "task",
   "task": {
     "action": "reply"
   },
@@ -414,11 +501,11 @@ Success — `201 Created`:
 }
 ```
 
-The database supplies defaults for status, worker, token, timestamps, response, and context memory.
+`job_type` is required and must be either `learn` or `task`. The database supplies defaults for status, worker, token, timestamps, response, and context memory.
 
 Errors:
 
-- `400 Bad Request` for missing fields, invalid JSON, or invalid organization/user IDs.
+- `400 Bad Request` for missing fields, unsupported `job_type`, invalid JSON, or invalid organization/user IDs.
 
 ### Update job status
 
@@ -506,6 +593,11 @@ Errors:
 - `409 Conflict` when the job cannot be transferred to `job_log`.
 
 ## Update history
+
+### 25 August 2026
+
+- Added organization-scoped APIs to save and retrieve custom skills.
+- Added the required `job_type` (`learn` or `task`) to job submission, retrieval, and queue-to-log transfer.
 
 ### 11 August 2026
 

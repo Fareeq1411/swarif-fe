@@ -17,6 +17,23 @@ if not LOG_PATH.is_absolute():
 
 _LOG_LOCK = threading.RLock()
 _HOOKS_INSTALLED = False
+MAX_LOG_BYTES = 1024 * 1024
+
+
+def _trim_log_file():
+    """Discard the oldest bytes while keeping the log at or below 1 MB."""
+    try:
+        if LOG_PATH.stat().st_size <= MAX_LOG_BYTES:
+            return
+        data = LOG_PATH.read_bytes()
+    except FileNotFoundError:
+        return
+
+    retained = data[-MAX_LOG_BYTES:]
+    first_newline = retained.find(b"\n")
+    if 0 <= first_newline < len(retained) - 1:
+        retained = retained[first_newline + 1:]
+    LOG_PATH.write_bytes(retained)
 
 
 def log(message):
@@ -37,6 +54,7 @@ def log(message):
     with _LOG_LOCK:
         with LOG_PATH.open("a", encoding="utf-8") as log_file:
             log_file.write(f"[{timestamp}] {content}\n")
+        _trim_log_file()
 
 
 def log_exceptions(function):

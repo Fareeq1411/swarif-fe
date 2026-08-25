@@ -7,7 +7,7 @@ import subprocess
 import sys
 from datetime import datetime
 
-from PyQt5.QtCore import QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QApplication,
@@ -40,6 +40,7 @@ DARK = "#15233A"
 MUTED = "#74839A"
 BORDER = "#DCE7F4"
 PALE_BLUE = "#EAF3FF"
+MAX_CONNECTION_LOG_BYTES = 1024 * 1024
 
 
 class BotAvatar(QWidget):
@@ -100,14 +101,17 @@ class TitleBar(QFrame):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._drag_offset = None
         self.setObjectName("titleBar")
         self.setFixedHeight(68)
 
         layout = QHBoxLayout(self)
+        self.content_layout = layout
         layout.setContentsMargins(21, 0, 14, 0)
         layout.setSpacing(8)
 
-        layout.addWidget(BrandMark())
+        self.mark = BrandMark()
+        layout.addWidget(self.mark)
         self.brand = QLabel("swarif")
         self.brand.setObjectName("brand")
         layout.addWidget(self.brand)
@@ -119,20 +123,46 @@ class TitleBar(QFrame):
         self.minimize.setIconSize(QSize(13, 13))
         self.minimize.setToolTip("Minimize to floating icon")
         self.minimize.clicked.connect(self.minimize_clicked)
-        close = QPushButton()
-        close.setObjectName("windowButton")
-        close.setIcon(qta.icon("fa5s.times", color="#526176"))
-        close.setIconSize(QSize(15, 15))
-        close.setToolTip("Close")
-        close.clicked.connect(self.close_clicked)
+        self.close_button = QPushButton()
+        self.close_button.setObjectName("windowButton")
+        self.close_button.setIcon(qta.icon("fa5s.times", color="#526176"))
+        self.close_button.setIconSize(QSize(15, 15))
+        self.close_button.setToolTip("Close")
+        self.close_button.clicked.connect(self.close_clicked)
         layout.addWidget(self.minimize)
-        layout.addWidget(close)
+        layout.addWidget(self.close_button)
 
     def set_compact(self, compact):
+        if compact:
+            self.content_layout.setContentsMargins(14, 0, 14, 0)
+        else:
+            self.content_layout.setContentsMargins(21, 0, 14, 0)
+        self.mark.setVisible(True)
         self.brand.setVisible(not compact)
+        self.close_button.setVisible(True)
+        self.minimize.setFixedSize(30, 30)
         icon_name = "fa5s.expand-alt" if compact else "fa5s.window-minimize"
         self.minimize.setIcon(qta.icon(icon_name, color="#526176"))
         self.minimize.setToolTip("Restore Swarif" if compact else "Minimize to floating icon")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = event.globalPos() - self.window().frameGeometry().topLeft()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._drag_offset is not None and event.buttons() & Qt.LeftButton:
+            self.window().move(event.globalPos() - self._drag_offset)
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self._drag_offset = None
+        super().mouseReleaseEvent(event)
 
 class NavButton(QPushButton):
     def __init__(self, icon_name, text, active=False, parent=None):
@@ -142,6 +172,41 @@ class NavButton(QPushButton):
         self.setIconSize(QSize(17, 17))
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(46)
+
+
+class ToggleSwitch(QCheckBox):
+    """A compact labelled on/off switch with a visible sliding knob."""
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFixedHeight(30)
+        self.setMinimumWidth(132)
+        self.stateChanged.connect(self.update)
+
+    def sizeHint(self):
+        return QSize(132, 30)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        track = QRectF(1, 5, 40, 20)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#32AE77" if self.isChecked() else "#CBD5E1"))
+        painter.drawRoundedRect(track, 10, 10)
+
+        knob_x = 22 if self.isChecked() else 3
+        painter.setBrush(QColor("white"))
+        painter.drawEllipse(QRectF(knob_x, 7, 16, 16))
+
+        painter.setPen(QColor("#176443" if self.isChecked() else "#526176"))
+        painter.setFont(self.font())
+        painter.drawText(
+            QRectF(49, 0, max(0, self.width() - 49), self.height()),
+            Qt.AlignVCenter | Qt.AlignLeft,
+            self.text(),
+        )
 
 
 class Sidebar(QFrame):
@@ -262,7 +327,7 @@ class AnimatedDots(QLabel):
 
 
 class TypingIndicator(QWidget):
-    def __init__(self, parent=None):
+    def __init__(self, summary="Thinking", parent=None):
         super().__init__(parent)
         self.setObjectName("typingIndicator")
         layout = QHBoxLayout(self)
@@ -273,9 +338,19 @@ class TypingIndicator(QWidget):
         bubble.setObjectName("typingBubble")
         bubble_layout = QHBoxLayout(bubble)
         bubble_layout.setContentsMargins(13, 7, 13, 9)
-        bubble_layout.addWidget(AnimatedDots())
+        self.dots = AnimatedDots()
+        bubble_layout.addWidget(self.dots)
+        self.summary = QLabel()
+        self.summary.setObjectName("typingSummary")
+        self.summary.setWordWrap(False)
+        bubble_layout.addWidget(self.summary)
+        self.set_summary(summary)
         layout.addWidget(bubble, 0, Qt.AlignTop)
         layout.addStretch()
+
+    def set_summary(self, summary):
+        text = summary.strip() if isinstance(summary, str) else ""
+        self.summary.setText(text or "Thinking")
 
 
 def format_chat_time(value):
@@ -864,8 +939,22 @@ class JobProgressBubble(QFrame):
 
 class ChatPanel(QFrame):
     message_submitted = pyqtSignal(str)
+    learning_mode_changed = pyqtSignal(bool)
 
-    def __init__(self, chat_messages=None, newest_first=False, processing_jobs=None, job_progress=None, agent_typing=False, parent=None):
+    def __init__(
+        self,
+        chat_messages=None,
+        newest_first=False,
+        processing_jobs=None,
+        job_progress=None,
+        agent_typing=False,
+        agent_typing_summary="Thinking",
+        learning_mode=False,
+        scroll_to_bottom_on_show=False,
+        initial_scroll_value=None,
+        preserve_bottom_on_refresh=False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setObjectName("chatPanel")
         layout = QVBoxLayout(self)
@@ -884,7 +973,23 @@ class ChatPanel(QFrame):
         title.setObjectName("assistantTitle")
         header_layout.addWidget(title)
         header_layout.addStretch()
+        self.learning_toggle = ToggleSwitch("Learning mode")
+        self.learning_toggle.setObjectName("learningToggle")
+        self.learning_toggle.setChecked(bool(learning_mode))
+        self.learning_toggle.setCursor(Qt.PointingHandCursor)
+        self.learning_toggle.toggled.connect(self.learning_mode_changed)
+        header_layout.addWidget(self.learning_toggle)
         layout.addWidget(header)
+
+        self.learning_banner = QLabel(
+            'LEARNING MODE — Send "start" to start teaching the AI. '
+            "Confirmed flows are saved as learning jobs, not operational tasks."
+        )
+        self.learning_banner.setObjectName("learningBanner")
+        self.learning_banner.setAlignment(Qt.AlignCenter)
+        self.learning_banner.setWordWrap(True)
+        self.learning_banner.setVisible(bool(learning_mode))
+        layout.addWidget(self.learning_banner)
 
         scroll = QScrollArea()
         scroll.setObjectName("chatScroll")
@@ -933,7 +1038,7 @@ class ChatPanel(QFrame):
         if valid_messages:
             self.empty_state = None
 
-        self.typing_indicator = TypingIndicator()
+        self.typing_indicator = TypingIndicator(agent_typing_summary)
         self.typing_indicator.setVisible(bool(agent_typing))
         messages.addWidget(self.typing_indicator)
 
@@ -947,11 +1052,26 @@ class ChatPanel(QFrame):
         scroll.setWidget(conversation)
         layout.addWidget(scroll, 1)
         self.chat_scroll = scroll
-        scroll.verticalScrollBar().rangeChanged.connect(
-            lambda _minimum, maximum: scroll.verticalScrollBar().setValue(maximum)
-        )
-        QTimer.singleShot(0, self.scroll_to_bottom)
-        QTimer.singleShot(100, self.scroll_to_bottom)
+        self.initial_scroll_active = bool(scroll_to_bottom_on_show)
+        if scroll_to_bottom_on_show:
+            scroll.verticalScrollBar().rangeChanged.connect(
+                self.keep_opening_at_bottom
+            )
+            QTimer.singleShot(0, self.scroll_to_bottom)
+            QTimer.singleShot(1000, self.finish_initial_scroll)
+        elif preserve_bottom_on_refresh:
+            scroll.verticalScrollBar().rangeChanged.connect(
+                self.keep_refresh_at_bottom
+            )
+            QTimer.singleShot(0, self.scroll_to_bottom)
+            QTimer.singleShot(500, self.finish_refresh_at_bottom)
+        elif initial_scroll_value is not None:
+            self._scroll_restore_value = int(initial_scroll_value)
+            scroll.verticalScrollBar().rangeChanged.connect(
+                self.keep_refresh_position
+            )
+            QTimer.singleShot(0, self.keep_refresh_position)
+            QTimer.singleShot(500, self.finish_refresh_position)
 
         composer_wrap = QWidget()
         composer_layout = QVBoxLayout(composer_wrap)
@@ -965,10 +1085,49 @@ class ChatPanel(QFrame):
         scrollbar = self.chat_scroll.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
 
-    def set_agent_typing(self, typing):
+    def keep_opening_at_bottom(self, _minimum, maximum):
+        self.chat_scroll.verticalScrollBar().setValue(maximum)
+
+    def finish_initial_scroll(self):
+        self.scroll_to_bottom()
+        self.initial_scroll_active = False
+        try:
+            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
+                self.keep_opening_at_bottom
+            )
+        except (TypeError, RuntimeError):
+            pass
+
+    def restore_scroll(self, value):
+        self.chat_scroll.verticalScrollBar().setValue(int(value))
+
+    def keep_refresh_at_bottom(self, *_args):
+        self.scroll_to_bottom()
+
+    def finish_refresh_at_bottom(self):
+        self.scroll_to_bottom()
+        try:
+            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
+                self.keep_refresh_at_bottom
+            )
+        except (TypeError, RuntimeError):
+            pass
+
+    def keep_refresh_position(self, *_args):
+        self.restore_scroll(self._scroll_restore_value)
+
+    def finish_refresh_position(self):
+        self.keep_refresh_position()
+        try:
+            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
+                self.keep_refresh_position
+            )
+        except (TypeError, RuntimeError):
+            pass
+
+    def set_agent_typing(self, typing, summary="Thinking"):
+        self.typing_indicator.set_summary(summary)
         self.typing_indicator.setVisible(bool(typing))
-        if typing:
-            QTimer.singleShot(0, self.scroll_to_bottom)
 
     def update_processing_jobs(self, processing_jobs, job_progress):
         while self.processing_layout.count():
@@ -983,7 +1142,6 @@ class ChatPanel(QFrame):
         self.processing_container.setVisible(bool(processing_jobs))
         if self.empty_state is not None:
             self.empty_state.setVisible(not processing_jobs)
-        QTimer.singleShot(0, self.scroll_to_bottom)
 
 
 class ConnectionLogDialog(QDialog):
@@ -1157,22 +1315,28 @@ class SettingsPanel(QFrame):
 class SwarifWindow(QWidget):
     message_submitted = pyqtSignal(str)
     server_connection_changed = pyqtSignal()
+    learning_mode_changed = pyqtSignal(bool)
 
     def __init__(self):
         super().__init__()
-        self._anchoring = False
         self._server_connected = False
         self.sidebar = None
         self._job_progress = {}
         self._active_jobs = []
         self._connection_log = []
+        self._connection_log_size = 0
         self._connection_log_dialog = None
         self._agent_typing = False
+        self._agent_typing_summary = "Thinking"
+        self._learning_mode = False
+        self._initial_position_pending = True
         self._inactive_jobs = []
         self.jobs_panel = None
         self._compact = False
         self._expanded_size = QSize(760, 700)
+        self._expanded_position = None
         self.setWindowTitle("Swarif")
+        self.setObjectName("swarifWindow")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.resize(760, 700)
@@ -1225,10 +1389,12 @@ class SwarifWindow(QWidget):
         page.setVisible(not self._compact)
 
     def toggle_compact(self):
-        """Collapse to a bottom-right floating control or restore the window."""
+        """Collapse to a floating control or restore the window in place."""
         self._compact = not self._compact
+        self.setProperty("compact", self._compact)
         if self._compact:
             self._expanded_size = self.size()
+            self._expanded_position = self.pos()
             if self.current_page is not None:
                 self.current_page.hide()
             self.title_bar.set_compact(True)
@@ -1245,8 +1411,16 @@ class SwarifWindow(QWidget):
             if self.current_page is not None:
                 self.current_page.show()
             self.fit_to_available_screen()
+        self.style().unpolish(self)
+        self.style().polish(self)
+        self.title_bar.style().unpolish(self.title_bar)
+        self.title_bar.style().polish(self.title_bar)
         self.show()
-        QTimer.singleShot(0, self.anchor_bottom_right)
+        if self._compact:
+            QTimer.singleShot(0, self.position_bottom_right)
+        elif self._expanded_position is not None:
+            restored_position = QPoint(self._expanded_position)
+            QTimer.singleShot(0, lambda: self.move(restored_position))
 
     def show_login(self):
         login = LoginPage()
@@ -1314,8 +1488,12 @@ class SwarifWindow(QWidget):
             processing_jobs=self.processing_jobs(),
             job_progress=self._job_progress,
             agent_typing=self._agent_typing,
+            agent_typing_summary=self._agent_typing_summary,
+            learning_mode=self._learning_mode,
+            scroll_to_bottom_on_show=True,
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
+        self.chat_panel.learning_mode_changed.connect(self.set_learning_mode)
         body_layout.addWidget(self.chat_panel, 1)
         self.set_page(body)
 
@@ -1397,9 +1575,27 @@ class SwarifWindow(QWidget):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         entry = f"[{timestamp}] {message}"
         self._connection_log.append(entry)
-        self._connection_log = self._connection_log[-1000:]
+        self._connection_log_size += len((entry + "\n").encode("utf-8"))
+        trimmed = False
+        while (
+            self._connection_log_size > MAX_CONNECTION_LOG_BYTES
+            and len(self._connection_log) > 1
+        ):
+            removed = self._connection_log.pop(0)
+            self._connection_log_size -= len((removed + "\n").encode("utf-8"))
+            trimmed = True
+        if self._connection_log_size > MAX_CONNECTION_LOG_BYTES:
+            retained = (self._connection_log[0] + "\n").encode("utf-8")[-MAX_CONNECTION_LOG_BYTES:]
+            self._connection_log[0] = retained.decode("utf-8", errors="ignore").rstrip("\n")
+            self._connection_log_size = len(
+                (self._connection_log[0] + "\n").encode("utf-8")
+            )
+            trimmed = True
         if self._connection_log_dialog is not None:
-            self._connection_log_dialog.append_entry(entry)
+            if trimmed:
+                self._connection_log_dialog.set_entries(self._connection_log)
+            else:
+                self._connection_log_dialog.append_entry(entry)
 
     def show_connection_log(self):
         if self._connection_log_dialog is None:
@@ -1434,10 +1630,33 @@ class SwarifWindow(QWidget):
         if self.sidebar is not None:
             self.sidebar.set_connected(self._server_connected)
 
-    def set_agent_typing(self, typing):
+    def set_agent_typing(self, typing, summary="Thinking"):
         self._agent_typing = bool(typing)
+        if isinstance(summary, str) and summary.strip():
+            self._agent_typing_summary = summary.strip()
         if self.current_page is not None and self.current_page.objectName() == "homePage":
-            self.chat_panel.set_agent_typing(self._agent_typing)
+            self.chat_panel.set_agent_typing(
+                self._agent_typing,
+                self._agent_typing_summary,
+            )
+
+    @property
+    def learning_mode(self):
+        return self._learning_mode
+
+    def set_learning_mode(self, enabled):
+        self._learning_mode = bool(enabled)
+        self.setProperty("learningMode", self._learning_mode)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        for widget in self.findChildren(QWidget):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        if self.current_page is not None and self.current_page.objectName() == "homePage":
+            self.chat_panel.learning_banner.setVisible(self._learning_mode)
+            if self.chat_panel.learning_toggle.isChecked() != self._learning_mode:
+                self.chat_panel.learning_toggle.setChecked(self._learning_mode)
+        self.learning_mode_changed.emit(self._learning_mode)
 
     def update_job_progress(self, job_id, current_progress):
         """Keep and display the newest TCP progress value for a job."""
@@ -1535,6 +1754,10 @@ class SwarifWindow(QWidget):
         if self.current_page is None or self.current_page.objectName() != "homePage":
             return
         old_panel = self.chat_panel
+        old_scrollbar = old_panel.chat_scroll.verticalScrollBar()
+        scroll_value = old_scrollbar.value()
+        was_at_bottom = scroll_value >= max(0, old_scrollbar.maximum() - 2)
+        continue_initial_scroll = old_panel.initial_scroll_active
         self.home_layout.removeWidget(old_panel)
         old_panel.setParent(None)
         old_panel.deleteLater()
@@ -1544,8 +1767,14 @@ class SwarifWindow(QWidget):
             processing_jobs=self.processing_jobs(),
             job_progress=self._job_progress,
             agent_typing=self._agent_typing,
+            agent_typing_summary=self._agent_typing_summary,
+            learning_mode=self._learning_mode,
+            scroll_to_bottom_on_show=continue_initial_scroll,
+            initial_scroll_value=None if continue_initial_scroll else scroll_value,
+            preserve_bottom_on_refresh=(not continue_initial_scroll and was_at_bottom),
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
+        self.chat_panel.learning_mode_changed.connect(self.set_learning_mode)
         self.home_layout.addWidget(self.chat_panel, 1)
 
     def logout(self):
@@ -1555,31 +1784,29 @@ class SwarifWindow(QWidget):
 
     def showEvent(self, event):
         super().showEvent(event)
-        QTimer.singleShot(0, self.anchor_bottom_right)
+        if self._initial_position_pending:
+            self._initial_position_pending = False
+            QTimer.singleShot(0, self.position_initially_bottom_right)
 
-    def moveEvent(self, event):
-        super().moveEvent(event)
-        if self.isVisible() and not self._anchoring:
-            QTimer.singleShot(0, self.anchor_bottom_right)
+    def position_initially_bottom_right(self):
+        """Place the first window show at bottom-right without anchoring it."""
+        self.position_bottom_right()
 
-    def anchor_bottom_right(self, *args):
+    def position_bottom_right(self):
+        """Move the current window size to the screen's bottom-right corner."""
         screen = QApplication.primaryScreen()
         if screen is None:
             return
         available = screen.availableGeometry()
         margin = 18
-        target_x = available.right() - self.width() - margin + 1
-        target_y = available.bottom() - self.height() - margin + 1
-        if self.x() == target_x and self.y() == target_y:
-            return
-        self._anchoring = True
-        self.move(target_x, target_y)
-        self._anchoring = False
+        self.move(
+            available.right() - self.width() - margin + 1,
+            available.bottom() - self.height() - margin + 1,
+        )
 
     def fit_to_available_screen(self):
         """Keep the complete window card within the usable desktop area."""
         if self._compact:
-            self.anchor_bottom_right()
             return
         screen = QApplication.primaryScreen()
         if screen is None:
@@ -1592,7 +1819,6 @@ class SwarifWindow(QWidget):
         target_height = min(max(self.height(), 600), maximum_height)
         if self.size() != QSize(target_width, target_height):
             self.resize(target_width, target_height)
-        self.anchor_bottom_right()
 
 
 STYLESHEET = f"""
@@ -1638,6 +1864,20 @@ STYLESHEET = f"""
 #chatHeader {{ background: white; border-bottom: 1px solid {BORDER}; }}
 #assistantTitle {{ font-size: 16px; font-weight: 700; }}
 #assistantSubtitle {{ color: {MUTED}; font-size: 12px; }}
+#learningToggle {{
+    color: #526176; font-size: 11px; font-weight: 650; spacing: 7px;
+}}
+#learningToggle::indicator {{
+    width: 32px; height: 17px; border-radius: 9px;
+    border: 1px solid #B9C8D9; background: #E7EDF4;
+}}
+#learningToggle::indicator:checked {{
+    border: 1px solid #229A68; background: #35B77D;
+}}
+#learningBanner {{
+    background: #DDF8EA; color: #12633F; border-bottom: 1px solid #A9E2C6;
+    padding: 9px 14px; font-size: 11px; font-weight: 700;
+}}
 #chatScroll {{ border: none; background: white; }}
 #bubbleIncoming, #bubbleOutgoing {{
     border: none; border-radius: 16px; padding: 11px 14px;
@@ -1649,6 +1889,7 @@ STYLESHEET = f"""
     background: {PALE_BLUE}; border-radius: 13px; min-width: 38px;
 }}
 #typingDots {{ color: {BLUE}; font-size: 15px; font-weight: 700; }}
+#typingSummary {{ color: {MUTED}; font-size: 12px; font-weight: 650; }}
 #timestamp {{ color: {MUTED}; font-size: 10px; }}
 #emptyTitle {{ color: #53647B; font-size: 14px; font-weight: 650; }}
 #emptyText {{ color: #95A4B8; font-size: 11px; }}
@@ -1769,6 +2010,38 @@ STYLESHEET = f"""
 }}
 #settingsFeedback {{ color: #239A5A; font-size: 11px; padding: 6px 0; }}
 #settingsFeedback[error="true"] {{ color: #C3424D; }}
+#swarifWindow[learningMode="true"] #windowCard {{
+    background: rgba(235, 252, 243, 235); border: 1px solid #9EDABB;
+}}
+#swarifWindow[learningMode="true"] #titleBar,
+#swarifWindow[learningMode="true"] #sidebar {{
+    background: rgba(225, 248, 237, 225); border-color: #A9DFC4;
+}}
+#swarifWindow[learningMode="true"] #chatPanel,
+#swarifWindow[learningMode="true"] #conversation,
+#swarifWindow[learningMode="true"] #chatHeader,
+#swarifWindow[learningMode="true"] #chatScroll,
+#swarifWindow[learningMode="true"] #homePage,
+#swarifWindow[learningMode="true"] #jobsPanel,
+#swarifWindow[learningMode="true"] #jobsPage,
+#swarifWindow[learningMode="true"] #settingsPanel,
+#swarifWindow[learningMode="true"] #settingsPage {{
+    background: rgba(242, 253, 247, 225); border-color: #B8E5CE;
+}}
+#swarifWindow[learningMode="true"] #navActive,
+#swarifWindow[learningMode="true"] #sendButton,
+#swarifWindow[learningMode="true"] #settingsSave {{ background: #249B69; }}
+#swarifWindow[learningMode="true"] #brand,
+#swarifWindow[learningMode="true"] #typingDots {{ color: #20865D; }}
+#swarifWindow[learningMode="true"] #bubbleIncoming {{
+    background: rgba(214, 246, 229, 220); color: #164B37;
+}}
+#swarifWindow[compact="true"] #windowCard {{
+    background: white; border: 1px solid #C9D9EA; border-radius: 34px;
+}}
+#swarifWindow[compact="true"] #titleBar {{
+    background: white; border: none; border-radius: 34px;
+}}
 QScrollBar:vertical {{ background: transparent; width: 5px; margin: 3px; }}
 QScrollBar::handle:vertical {{ background: #CAD8E8; border-radius: 2px; min-height: 28px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
