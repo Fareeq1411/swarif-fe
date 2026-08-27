@@ -22,6 +22,7 @@ class SwarifBackend(QObject):
     backend_error = pyqtSignal(str)
     jobs_changed = pyqtSignal(list, list)
     agent_typing_changed = pyqtSignal(bool, str)
+    task_state_changed = pyqtSignal(str)
 
     def __init__(self, window, poll_interval_ms=750):
         super().__init__(window)
@@ -35,6 +36,9 @@ class SwarifBackend(QObject):
         self._agent_sequence = 0
         self._agent_revision = 0
         self._agent_worker = None
+        self._active_task = None
+        self._cancelled_job_ids = set()
+        self._server_connection = None
         self._learning_mode = bool(window.learning_mode)
         self._job_poll_lock = threading.Lock()
         self._job_poll_in_flight = False
@@ -44,6 +48,8 @@ class SwarifBackend(QObject):
         self.backend_error.connect(self.report_error)
         self.jobs_changed.connect(self.window.update_jobs)
         self.agent_typing_changed.connect(self.window.set_agent_typing)
+        self.task_state_changed.connect(self.window.set_task_state)
+        self.window.stop_requested.connect(self.stop_current_task)
         self.window.learning_mode_changed.connect(self.set_learning_mode)
 
         self.poll_timer = QTimer(self)
@@ -57,6 +63,147 @@ class SwarifBackend(QObject):
         self.job_poll_timer.timeout.connect(self.poll_active_jobs)
         self.job_poll_timer.start()
         QTimer.singleShot(0, self.poll_active_jobs)
+
+    def set_server_connection(self, connection):
+        self._server_connection = connection
+
+    def _emit_task_state(self, state):
+        log(f"Task lifecycle state: {state}")
+        self.task_state_changed.emit(state)
+
+    @staticmethod
+    def _processing_jobs(jobs):
+        return [
+            job for job in jobs
+            if isinstance(job, dict) and str(job.get("status")) == "3"
+        ]
+
+    def _recover_active_job(self, active_jobs):
+        """Restore one processing job so Stop remains available after restart."""
+        processing_jobs = self._processing_jobs(active_jobs)
+        if not processing_jobs:
+            return None
+
+        session = Agent.read_session() or {}
+        user_id = session.get("user_id") or session.get("id")
+        org_id = session.get("org_id")
+        # fetch-job returns newest first; use the newest processing job as the
+        # single Composer-owned job and leave every other active job untouched.
+        recovered = processing_jobs[0]
+        job_id = str(recovered.get("id") or "").strip()
+        if not job_id or not isinstance(user_id, str) or not user_id.strip():
+            return None
+        with self._agent_condition:
+            if self._active_task is not None:
+                return self._active_task.get("active_job_id")
+            self._active_task = {
+                "state": "executing",
+                "cancel_event": threading.Event(),
+                "active_job_id": job_id,
+                "org_id": str(org_id or "").strip(),
+                "user_id": user_id.strip(),
+                "cancel_requested": False,
+            }
+        log(
+            f"Recovered active job_id={job_id} after restart "
+            f"(processing_jobs={len(processing_jobs)})"
+        )
+        if len(processing_jobs) > 1:
+            log(
+                "Multiple processing jobs found; Stop controls only "
+                f"recovered job_id={job_id}"
+            )
+        self._emit_task_state("executing")
+        return job_id
+
+    def stop_current_task(self):
+        """Invalidate this task and cancel only its submitted job, if any."""
+        with self._agent_condition:
+            task = self._active_task
+            if task is None or task["state"] not in {"thinking", "executing"}:
+                return
+            task["state"] = "stopping"
+            task["cancel_event"].set()
+            task["cancel_requested"] = True
+            job_id = task.get("active_job_id")
+            task["cancel_pending"] = bool(job_id)
+            revision = self._agent_revision + 1
+            self._agent_revision = revision
+            self._agent_messages.clear()
+            self._agent_condition.notify_all()
+        self._emit_task_state("stopping")
+        if job_id:
+            threading.Thread(
+                target=self._cancel_submitted_job,
+                args=(task, job_id),
+                name=f"swarif-cancel-{job_id}",
+                daemon=True,
+            ).start()
+
+    def _cancel_submitted_job(self, task, job_id):
+        connection = self._server_connection
+        log(f"cancel_job sent user_id={task['user_id']} job_id={job_id}")
+        if connection is None:
+            self._finish_cancel(task, False, "Cancellation failed")
+            return
+        accepted = connection.cancel_job(task["user_id"], job_id)
+        reason = getattr(connection, "_last_cancel_error", None) or (
+            "the server did not confirm cancellation"
+        )
+        log(
+            f"cancel_job result user_id={task['user_id']} job_id={job_id}: "
+            f"{'confirmed' if accepted else 'not confirmed'}"
+        )
+        if accepted:
+            self._cancelled_job_ids.add(job_id)
+            with self._agent_condition:
+                task["cancel_confirmed"] = True
+            self._finish_cancel(task, True, "Task cancelled")
+        else:
+            self._finish_cancel(
+                task,
+                False,
+                f"Cancellation failed: {reason}",
+            )
+
+    def _finish_cancel(self, task, accepted, notice):
+        if task is None:
+            return
+        with self._agent_condition:
+            if self._active_task is not task:
+                return
+            if task.get("active_job_id") and not task.get("cancel_confirmed"):
+                accepted = False
+                if notice == "Task cancelled":
+                    notice = "Cancellation failed: cancellation was not confirmed"
+            if accepted:
+                self._active_task = None
+                task["active_job_id"] = None
+                task["state"] = "idle"
+                task["cancel_pending"] = False
+                next_state = "idle"
+            else:
+                # Keep Stop available until cancellation is confirmed.
+                task["state"] = "executing" if task.get("active_job_id") else "thinking"
+                task["cancel_pending"] = False
+                next_state = task["state"]
+            self._agent_condition.notify_all()
+        self._emit_task_state(next_state)
+        if notice:
+            self._append_status_message(notice, task["org_id"], task["user_id"])
+        self.chat_file_changed.emit()
+
+    @staticmethod
+    def _append_status_message(message, org_id, user_id):
+        Agent.append_local_chat({
+            "id": f"local-{uuid.uuid4()}",
+            "org_id": org_id,
+            "user_id": user_id,
+            "type": "out",
+            "message": message,
+            "created_time": datetime.now(timezone.utc).isoformat(),
+            "delivery_status": "local_only",
+        })
 
     def poll_active_jobs(self):
         """Fetch active jobs every five seconds, regardless of the open page."""
@@ -73,7 +220,36 @@ class SwarifBackend(QObject):
                     active_jobs, inactive_jobs = partition_jobs_by_status(
                         active_result, inactive_result
                     )
+                    self._recover_active_job(active_jobs)
+                    with self._agent_condition:
+                        task = self._active_task
+                        tracked_job_id = (
+                            task.get("active_job_id")
+                            if task is not None
+                            and task.get("state") in {"thinking", "executing"}
+                            else None
+                        )
+                    if tracked_job_id and any(
+                        str(job.get("id")) == tracked_job_id
+                        for job in active_jobs
+                    ):
+                        self._emit_task_state("executing")
+                    terminal_job = next(
+                        (
+                            job for job in inactive_jobs
+                            if str(job.get("id")) == tracked_job_id
+                        ),
+                        None,
+                    ) if tracked_job_id else None
                     self.jobs_changed.emit(active_jobs, inactive_jobs)
+                    if terminal_job is not None:
+                        self.receive_job_completion(
+                            tracked_job_id,
+                            {
+                                "status": terminal_job.get("status"),
+                                "response": terminal_job.get("response"),
+                            },
+                        )
             except (ValueError, RuntimeError, ConnectionError) as error:
                 self.backend_error.emit(str(error))
             finally:
@@ -129,6 +305,23 @@ class SwarifBackend(QObject):
 
     def receive_job_completion(self, job_id, completion_feedback=None):
         """Deduplicate completion events and notify the user off the UI thread."""
+        if job_id in self._cancelled_job_ids:
+            return
+        log(f"Job completion received for job_id={job_id}")
+        with self._agent_condition:
+            task = self._active_task
+            if (
+                task is None
+                or task.get("active_job_id") != job_id
+            ):
+                return
+            if task.get("state") == "stopping":
+                task["active_job_id"] = None
+                self._active_task = None
+                self._emit_task_state("idle")
+                self.chat_file_changed.emit()
+                return
+            task["job_completed_id"] = job_id
         with self._completion_lock:
             if job_id in self._completed_job_ids:
                 return
@@ -141,6 +334,20 @@ class SwarifBackend(QObject):
         ).start()
 
     def _announce_job_completion(self, job_id, completion_feedback):
+        if job_id in self._cancelled_job_ids:
+            return
+        with self._agent_condition:
+            completion_task = self._active_task
+
+        def still_current():
+            with self._agent_condition:
+                return (
+                    completion_task is not None
+                    and self._active_task is completion_task
+                    and completion_task["state"] in {"thinking", "executing"}
+                    and not completion_task["cancel_event"].is_set()
+                )
+
         session = Agent.read_session()
         if session is False:
             return
@@ -150,6 +357,9 @@ class SwarifBackend(QObject):
             feedback_text = json.dumps(
                 completion_feedback, ensure_ascii=False, default=str
             )
+            completion_options = {
+                "should_continue": still_current,
+            } if completion_task is not None else {}
             Agent.decide_action(
                 f"System: Job {job_id} has finished. Generate a helpful response to the "
                 f"user using this completion_feedback as result data: {feedback_text}. "
@@ -158,6 +368,7 @@ class SwarifBackend(QObject):
                 org_id,
                 user_id,
                 reset_context=False,
+                **completion_options,
             )
         except (ValueError, RuntimeError, ConnectionError) as error:
             self._send_failure_reply(
@@ -171,7 +382,27 @@ class SwarifBackend(QObject):
             )
             self.backend_error.emit(str(error))
         finally:
+            with self._agent_condition:
+                if (
+                    self._active_task is not None
+                    and (
+                        self._active_task.get("active_job_id") == job_id
+                        or self._active_task.get("job_completed_id") == job_id
+                    )
+                ):
+                    completed_task = self._active_task
+                    self._active_task = None
+                else:
+                    completed_task = None
+            if completed_task is not None:
+                self._emit_task_state("idle")
             self.chat_file_changed.emit()
+
+    def receive_job_progress(self, job_id, current_progress):
+        """Ignore progress arriving after this task was cancelled."""
+        if job_id in self._cancelled_job_ids:
+            return
+        self.window.update_job_progress(job_id, current_progress)
 
     def send_user_message(self, message):
         """Append locally, save to the API, then invoke Agent.decide_action."""
@@ -200,9 +431,19 @@ class SwarifBackend(QObject):
         # Required order: local chat first, database second, agent third.
         Agent.append_local_chat(provisional)
         self.agent_typing_changed.emit(True, "Thinking")
+        with self._agent_condition:
+            self._active_task = {
+                "state": "thinking",
+                "cancel_event": threading.Event(),
+                "active_job_id": None,
+                "org_id": org_id.strip(),
+                "user_id": user_id,
+                "cancel_requested": False,
+            }
         self.chat_file_changed.emit()
 
         sequence = self._register_agent_message(message, org_id.strip(), user_id)
+        self._emit_task_state("thinking")
 
         threading.Thread(
             target=self._store_and_decide,
@@ -222,24 +463,36 @@ class SwarifBackend(QObject):
                 "user_id": user_id,
                 "ready": False,
                 "learning_mode": self._learning_mode,
+                "task": self._active_task,
             }
             self._agent_condition.notify_all()
         return sequence
 
     def _mark_agent_message_ready(self, sequence):
+        cancelled_task = None
         with self._agent_condition:
             item = self._agent_messages.get(sequence)
             if item is None:
+                if self._active_task is not None and self._active_task["cancel_requested"]:
+                    cancelled_task = self._active_task
+                else:
+                    return
+            if cancelled_task is not None:
+                pass
+            else:
+                item["ready"] = True
+                if self._agent_worker is None or not self._agent_worker.is_alive():
+                    self._agent_worker = threading.Thread(
+                        target=self._agent_loop,
+                        name="swarif-agent-queue",
+                        daemon=True,
+                    )
+                    self._agent_worker.start()
+                self._agent_condition.notify_all()
+        if cancelled_task is not None:
+            if cancelled_task.get("active_job_id"):
                 return
-            item["ready"] = True
-            if self._agent_worker is None or not self._agent_worker.is_alive():
-                self._agent_worker = threading.Thread(
-                    target=self._agent_loop,
-                    name="swarif-agent-queue",
-                    daemon=True,
-                )
-                self._agent_worker.start()
-            self._agent_condition.notify_all()
+            self._finish_cancel(cancelled_task, True, "Task cancelled")
 
     def _drop_agent_message(self, sequence):
         with self._agent_condition:
@@ -256,6 +509,16 @@ class SwarifBackend(QObject):
                     self._agent_condition.wait()
                 if not self._agent_messages:
                     self._agent_worker = None
+                    task = self._active_task
+                    if task is not None and task["cancel_requested"]:
+                        if task.get("active_job_id"):
+                            task["state"] = "stopping"
+                        else:
+                            self._active_task = None
+                            self._emit_task_state("idle")
+                            self._append_status_message(
+                                "Task cancelled", task["org_id"], task["user_id"]
+                            )
                     return
                 sequences = sorted(self._agent_messages)
                 items = [self._agent_messages[number].copy() for number in sequences]
@@ -276,7 +539,50 @@ class SwarifBackend(QObject):
 
             def still_current():
                 with self._agent_condition:
-                    return revision == self._agent_revision
+                    return (
+                        revision == self._agent_revision
+                        and self._active_task is not None
+                        and self._active_task["state"] in {"thinking", "executing"}
+                        and not self._active_task["cancel_event"].is_set()
+                    )
+
+            def job_created(created_job):
+                job_id = created_job.get("id") if isinstance(created_job, dict) else None
+                if not isinstance(job_id, str) or not job_id.strip():
+                    return
+                with self._agent_condition:
+                    task = self._active_task
+                    if (
+                        task is None
+                        or task["state"] not in {"thinking", "executing"}
+                        or revision != self._agent_revision
+                    ):
+                        should_cancel = True
+                    else:
+                        task["active_job_id"] = job_id.strip()
+                        task["state"] = "executing"
+                        log(f"job_id captured after submission: {task['active_job_id']}")
+                        should_cancel = False
+                        self._emit_task_state("executing")
+                if should_cancel:
+                    self._cancelled_job_ids.add(job_id.strip())
+                    if self._server_connection is not None:
+                        accepted = self._server_connection.cancel_job(
+                            items[-1]["user_id"], job_id.strip()
+                        )
+                        self._finish_cancel(
+                            task,
+                            accepted,
+                            "Task cancelled"
+                            if accepted
+                            else "Cancellation could not be confirmed. The task is stopped locally; check Jobs for its status.",
+                        )
+                    else:
+                        self._finish_cancel(
+                            task,
+                            False,
+                            "The server connection is unavailable; cancellation was not confirmed.",
+                        )
 
             def show_step(short_summary):
                 if still_current():
@@ -290,6 +596,7 @@ class SwarifBackend(QObject):
                         items[-1]["user_id"],
                         should_continue=still_current,
                         on_step=show_step,
+                        on_job_created=job_created,
                     )
                 else:
                     Agent.decide_action(
@@ -299,6 +606,7 @@ class SwarifBackend(QObject):
                         learning_mode=False,
                         should_continue=still_current,
                         on_step=show_step,
+                        on_job_created=job_created,
                     )
             except (ValueError, RuntimeError, ConnectionError) as error:
                 if still_current():
@@ -317,6 +625,24 @@ class SwarifBackend(QObject):
                 self._agent_condition.notify_all()
             if idle:
                 self.agent_typing_changed.emit(False, "Thinking")
+            with self._agent_condition:
+                task = self._active_task
+                cancelled = task is not None and task["cancel_requested"]
+            if cancelled:
+                # A submitted job remains owned by this task until the server
+                # confirms cancellation; do not restore Send prematurely.
+                if task.get("active_job_id"):
+                    task["state"] = "stopping"
+                else:
+                    self._finish_cancel(task, True, "Task cancelled")
+            elif idle and not (
+                task is not None
+                and (task.get("active_job_id") or task.get("job_completed_id"))
+            ):
+                with self._agent_condition:
+                    if self._active_task is task:
+                        self._active_task = None
+                self._emit_task_state("idle")
 
     def set_learning_mode(self, enabled):
         """Apply mode changes to queued work and invalidate an in-flight decision."""
@@ -344,6 +670,13 @@ class SwarifBackend(QObject):
             self._mark_agent_message_ready(sequence)
         except (ValueError, RuntimeError, ConnectionError) as error:
             self._drop_agent_message(sequence)
+            with self._agent_condition:
+                cancelled = (
+                    self._active_task is not None
+                    and self._active_task["cancel_requested"]
+                )
+            if cancelled:
+                return
             if stored_message is None:
                 failed = {**provisional, "delivery_status": "failed"}
                 Agent.replace_local_chat(provisional["id"], failed)
@@ -433,9 +766,10 @@ def main():
     backend = SwarifBackend(window)
     window.backend = backend
     server_connection = ServerConnection(Agent.read_session, parent=app)
+    backend.set_server_connection(server_connection)
     server_connection.status_changed.connect(window.set_server_connected)
     server_connection.completion_received.connect(backend.receive_job_completion)
-    server_connection.progress_received.connect(window.update_job_progress)
+    server_connection.progress_received.connect(backend.receive_job_progress)
     server_connection.log_message.connect(window.append_connection_log)
     window.server_connection_changed.connect(server_connection.reconnect)
     app.aboutToQuit.connect(server_connection.stop)
