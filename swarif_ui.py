@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 
 from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -422,6 +422,7 @@ class GrowingMessageEdit(QTextEdit):
 
 class Composer(QFrame):
     message_submitted = pyqtSignal(str)
+    stop_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -440,16 +441,47 @@ class Composer(QFrame):
         self.message.setObjectName("messageInput")
         self.message.setPlaceholderText("Type a message...")
         self.message.submit_requested.connect(self.submit_message)
-        send = QPushButton()
-        send.setObjectName("sendButton")
-        send.setIcon(qta.icon("fa5s.paper-plane", color="white"))
-        send.setIconSize(QSize(18, 18))
-        send.setToolTip("Send (Shift+Enter)")
-        send.clicked.connect(self.submit_message)
+        self.send = QPushButton()
+        self.send.setObjectName("sendButton")
+        self.send.setIcon(qta.icon("fa5s.paper-plane", color="white"))
+        self.send.setIconSize(QSize(18, 18))
+        self.send.setToolTip("Send (Shift+Enter)")
+        self.send.clicked.connect(self._button_clicked)
 
         layout.addWidget(attach)
         layout.addWidget(self.message, 1)
-        layout.addWidget(send)
+        layout.addWidget(self.send)
+
+        self._task_state = "idle"
+
+    def set_task_state(self, state):
+        self._task_state = state if state in {
+            "idle", "thinking", "executing", "stopping"
+        } else "idle"
+        log(f"Stop button state: {self._task_state}")
+        stopping = self._task_state == "stopping"
+        active = self._task_state in {"thinking", "executing"}
+        self.message.setEnabled(not active and not stopping)
+        self.send.setEnabled(not stopping)
+        if stopping:
+            self.send.setText("Stopping…")
+            self.send.setIcon(QIcon())
+            self.send.setToolTip("Stopping…")
+        elif active:
+            self.send.setText("Stop")
+            self.send.setIcon(qta.icon("fa5s.stop", color="white"))
+            self.send.setToolTip("Stop")
+        else:
+            self.send.setText("")
+            self.send.setIcon(qta.icon("fa5s.paper-plane", color="white"))
+            self.send.setToolTip("Send (Shift+Enter)")
+
+    def _button_clicked(self):
+        if self._task_state in {"thinking", "executing"}:
+            self.set_task_state("stopping")
+            self.stop_requested.emit()
+        elif self._task_state == "idle":
+            self.submit_message()
 
     def submit_message(self):
         message = self.message.toPlainText().strip()
@@ -939,6 +971,7 @@ class JobProgressBubble(QFrame):
 
 class ChatPanel(QFrame):
     message_submitted = pyqtSignal(str)
+    stop_requested = pyqtSignal()
     learning_mode_changed = pyqtSignal(bool)
 
     def __init__(
@@ -1077,7 +1110,9 @@ class ChatPanel(QFrame):
         composer_layout = QVBoxLayout(composer_wrap)
         composer_layout.setContentsMargins(15, 10, 15, 16)
         composer = Composer()
+        self.composer = composer
         composer.message_submitted.connect(self.message_submitted)
+        composer.stop_requested.connect(self.stop_requested)
         composer_layout.addWidget(composer)
         layout.addWidget(composer_wrap)
 
@@ -1128,6 +1163,9 @@ class ChatPanel(QFrame):
     def set_agent_typing(self, typing, summary="Thinking"):
         self.typing_indicator.set_summary(summary)
         self.typing_indicator.setVisible(bool(typing))
+
+    def set_task_state(self, state):
+        self.composer.set_task_state(state)
 
     def update_processing_jobs(self, processing_jobs, job_progress):
         while self.processing_layout.count():
@@ -1314,6 +1352,7 @@ class SettingsPanel(QFrame):
 
 class SwarifWindow(QWidget):
     message_submitted = pyqtSignal(str)
+    stop_requested = pyqtSignal()
     server_connection_changed = pyqtSignal()
     learning_mode_changed = pyqtSignal(bool)
 
@@ -1328,6 +1367,7 @@ class SwarifWindow(QWidget):
         self._connection_log_dialog = None
         self._agent_typing = False
         self._agent_typing_summary = "Thinking"
+        self._task_state = "idle"
         self._learning_mode = False
         self._initial_position_pending = True
         self._inactive_jobs = []
@@ -1493,7 +1533,9 @@ class SwarifWindow(QWidget):
             scroll_to_bottom_on_show=True,
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
+        self.chat_panel.stop_requested.connect(self.stop_requested)
         self.chat_panel.learning_mode_changed.connect(self.set_learning_mode)
+        self.chat_panel.set_task_state(self._task_state)
         body_layout.addWidget(self.chat_panel, 1)
         self.set_page(body)
 
@@ -1640,6 +1682,13 @@ class SwarifWindow(QWidget):
                 self._agent_typing_summary,
             )
 
+    def set_task_state(self, state):
+        self._task_state = state if state in {
+            "idle", "thinking", "executing", "stopping"
+        } else "idle"
+        if self.current_page is not None and self.current_page.objectName() == "homePage":
+            self.chat_panel.set_task_state(self._task_state)
+
     @property
     def learning_mode(self):
         return self._learning_mode
@@ -1774,7 +1823,9 @@ class SwarifWindow(QWidget):
             preserve_bottom_on_refresh=(not continue_initial_scroll and was_at_bottom),
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
+        self.chat_panel.stop_requested.connect(self.stop_requested)
         self.chat_panel.learning_mode_changed.connect(self.set_learning_mode)
+        self.chat_panel.set_task_state(self._task_state)
         self.home_layout.addWidget(self.chat_panel, 1)
 
     def logout(self):

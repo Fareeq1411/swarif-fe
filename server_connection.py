@@ -20,6 +20,9 @@ class ServerConnection(QObject):
     status_changed = pyqtSignal(bool)
     completion_received = pyqtSignal(str, object)
     progress_received = pyqtSignal(str, object)
+    cancellation_succeeded = pyqtSignal(str)
+    cancellation_failed = pyqtSignal(str, str)
+    cancellation_connection_lost = pyqtSignal(str)
     log_message = pyqtSignal(str)
 
     def __init__(
@@ -43,8 +46,11 @@ class ServerConnection(QObject):
         self._wake_event = threading.Event()
         self._socket = None
         self._receive_buffer = bytearray()
+        self._last_cancel_error = None
         self._state_lock = threading.Lock()
         self._socket_lock = threading.Lock()
+        # A listener and a request must never consume each other's response.
+        self._packet_lock = threading.Lock()
 
     @property
     def connected(self):
@@ -180,7 +186,8 @@ class ServerConnection(QObject):
             if exceptional:
                 return False
             if readable:
-                response = self.receive_packet(sock)
+                with self._packet_lock:
+                    response = self.receive_packet(sock)
                 if self._handle_server_packet(response):
                     continue
                 if response.get("status") == "bad":
@@ -194,18 +201,71 @@ class ServerConnection(QObject):
 
     def send_packet(self, packet):
         """Send one UTF-8 JSON packet and read one JSON response."""
-        with self._socket_lock:
-            sock = self._socket
-        if sock is None:
-            raise ConnectionError("The local server socket is not connected")
+        with self._packet_lock:
+            with self._socket_lock:
+                sock = self._socket
+            if sock is None:
+                raise ConnectionError("The local server socket is not connected")
 
-        self._log(f"SEND {json.dumps(packet, ensure_ascii=False)}")
-        sock.sendall(json.dumps(packet).encode("utf-8"))
-        while True:
-            response = self.receive_packet(sock)
-            if self._handle_server_packet(response):
-                continue
-            return response
+            self._log(f"SEND {json.dumps(packet, ensure_ascii=False)}")
+            sock.sendall(json.dumps(packet).encode("utf-8"))
+            while True:
+                response = self.receive_packet(sock)
+                if self._handle_server_packet(response):
+                    continue
+                return response
+
+    def cancel_job(self, user_id, job_id):
+        """Cancel exactly one job over the existing connection."""
+        user_id = str(user_id or "").strip()
+        job_id = str(job_id or "").strip()
+        if not user_id or not job_id:
+            error = "Cancellation requires a user_id and job_id"
+            self._last_cancel_error = error
+            self.cancellation_failed.emit(job_id, error)
+            return False
+        if not self.connected:
+            error = "The local server connection is unavailable; cancellation was not confirmed"
+            self._last_cancel_error = error
+            self.cancellation_connection_lost.emit(job_id)
+            self.cancellation_failed.emit(job_id, error)
+            return False
+        try:
+            self._log(
+                f"cancel_job SEND user_id={user_id} job_id={job_id}"
+            )
+            response = self.send_packet(
+                {"type": "cancel_job", "user_id": user_id, "job_id": job_id}
+            )
+            self._log(
+                f"cancel_job RESPONSE user_id={user_id} job_id={job_id} "
+                f"response={json.dumps(response, ensure_ascii=False, default=str)}"
+            )
+            self._last_cancel_error = None
+        except (OSError, socket.error, ConnectionError, ValueError) as error:
+            self._last_cancel_error = str(error)
+            self._log(
+                f"cancel_job RESPONSE user_id={user_id} job_id={job_id} "
+                f"error={error}"
+            )
+            self._set_connected(False)
+            self.cancellation_connection_lost.emit(job_id)
+            self.cancellation_failed.emit(job_id, str(error))
+            return False
+        accepted = (
+            isinstance(response, dict)
+            and response.get("status") == "ok"
+            and response.get("type") == "cancel_job"
+            and response.get("job_id") == job_id
+            and response.get("cancelled") is True
+        )
+        if accepted:
+            self.cancellation_succeeded.emit(job_id)
+            return True
+        error = "The server did not confirm cancellation for this job"
+        self._last_cancel_error = error
+        self.cancellation_failed.emit(job_id, error)
+        return False
 
     def receive_packet(self, sock=None):
         """Read and decode one UTF-8 JSON packet from the active socket."""
