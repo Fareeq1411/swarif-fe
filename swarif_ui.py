@@ -8,7 +8,7 @@ import sys
 from datetime import datetime
 
 from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen
+from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -446,11 +446,23 @@ class Composer(QFrame):
         self.send.setIcon(qta.icon("fa5s.paper-plane", color="white"))
         self.send.setIconSize(QSize(18, 18))
         self.send.setToolTip("Send (Shift+Enter)")
+        self.send.setAccessibleName("Send message")
         self.send.clicked.connect(self._button_clicked)
+
+        self.stop_status = QLabel("Stopping…")
+        self.stop_status.setObjectName("stopStatus")
+        self.stop_status.setAlignment(Qt.AlignCenter)
+        self.stop_status.hide()
+
+        send_layout = QVBoxLayout()
+        send_layout.setContentsMargins(0, 0, 0, 0)
+        send_layout.setSpacing(2)
+        send_layout.addWidget(self.stop_status)
+        send_layout.addWidget(self.send, 0, Qt.AlignHCenter)
 
         layout.addWidget(attach)
         layout.addWidget(self.message, 1)
-        layout.addWidget(self.send)
+        layout.addLayout(send_layout)
 
         self._task_state = "idle"
 
@@ -463,18 +475,22 @@ class Composer(QFrame):
         active = self._task_state in {"thinking", "executing"}
         self.message.setEnabled(not active and not stopping)
         self.send.setEnabled(not stopping)
+        self.stop_status.setVisible(stopping)
         if stopping:
-            self.send.setText("Stopping…")
-            self.send.setIcon(QIcon())
+            self.send.setText("")
+            self.send.setIcon(qta.icon("fa5s.stop", color="#DCE8F8"))
             self.send.setToolTip("Stopping…")
+            self.send.setAccessibleName("Stopping task")
         elif active:
-            self.send.setText("Stop")
+            self.send.setText("")
             self.send.setIcon(qta.icon("fa5s.stop", color="white"))
             self.send.setToolTip("Stop")
+            self.send.setAccessibleName("Stop task")
         else:
             self.send.setText("")
             self.send.setIcon(qta.icon("fa5s.paper-plane", color="white"))
             self.send.setToolTip("Send (Shift+Enter)")
+            self.send.setAccessibleName("Send message")
 
     def _button_clicked(self):
         if self._task_state in {"thinking", "executing"}:
@@ -1961,6 +1977,9 @@ STYLESHEET = f"""
     width: 40px; height: 40px; border-radius: 20px;
 }}
 #sendButton:hover {{ background: #1768D5; }}
+#stopStatus {{
+    color: {MUTED}; font-size: 9px; font-weight: 600;
+}}
 #loginPage {{ background: #F7FAFE; }}
 #loginCard {{
     background: white; border: 1px solid #D9E5F2; border-radius: 22px;

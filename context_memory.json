@@ -1,5 +1,11 @@
 {
-  "current_step": "decide_action",
-  "step_history": [],
-  "step_count": 0
+  "current_step": "notify_user",
+  "step_history": [
+    {
+      "step_no": 1,
+      "step": "decide_action",
+      "summary": "Submitting the confirmed invoice submission job."
+    }
+  ],
+  "step_count": 1
 }

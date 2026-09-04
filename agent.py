@@ -4,6 +4,7 @@ import ipaddress
 import platform
 import socket
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -19,6 +20,14 @@ load_dotenv(Path(__file__).with_name(".env"))
 DEFAULT_API_URL = os.getenv("SWARIF_API_URL", "https://api.swarif.com")
 DEFAULT_DEEPSEEK_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
 DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+DEFAULT_GEMINI_URL = os.getenv(
+    "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
+)
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_OPENROUTER_URL = os.getenv(
+    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
+)
+DEFAULT_OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
 LOGIN_PATH = "/api/auth/login"
 GET_USER_PATH = "/api/user/get-user"
 GET_CHAT_PATH = "/api/client-app/get-chat"
@@ -48,6 +57,122 @@ if not EXTRA_DATA_PATH.is_absolute():
     EXTRA_DATA_PATH = Path(__file__).parent / EXTRA_DATA_PATH
 CHAT_FILE_LOCK = threading.RLock()
 SESSION_FILE_LOCK = threading.RLock()
+AGENT_LOG_PATH = Path(os.getenv("AGENT_LOG_PATH", "agent_log.txt"))
+if not AGENT_LOG_PATH.is_absolute():
+    AGENT_LOG_PATH = Path(__file__).parent / AGENT_LOG_PATH
+AGENT_LOG_LOCK = threading.RLock()
+MAX_AGENT_LOG_BYTES = 1024 * 1024
+
+
+def log_llm_call(provider, model, step, timeout, started_at, response=None, error=None):
+    """Append one metadata-only JSON line describing an LLM API call."""
+    usage = getattr(response, "usage", None)
+    entry = {
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "event": "llm_call",
+        "provider": provider,
+        "model": model,
+        "step": step or "unspecified",
+        "timeout_seconds": timeout,
+        "duration_ms": round((time.monotonic() - started_at) * 1000),
+        "status": "failed" if error is not None else "completed",
+    }
+    if usage is not None:
+        entry["input_tokens"] = getattr(usage, "prompt_tokens", None)
+        entry["output_tokens"] = getattr(usage, "completion_tokens", None)
+        entry["total_tokens"] = getattr(usage, "total_tokens", None)
+    if error is not None:
+        entry["error_type"] = type(error).__name__
+
+    with AGENT_LOG_LOCK:
+        with AGENT_LOG_PATH.open("a", encoding="utf-8") as log_file:
+            log_file.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        try:
+            if AGENT_LOG_PATH.stat().st_size > MAX_AGENT_LOG_BYTES:
+                retained = AGENT_LOG_PATH.read_bytes()[-MAX_AGENT_LOG_BYTES:]
+                first_newline = retained.find(b"\n")
+                if first_newline >= 0:
+                    retained = retained[first_newline + 1:]
+                AGENT_LOG_PATH.write_bytes(retained)
+        except FileNotFoundError:
+            pass
+
+
+def parse_llm_json_object(content):
+    """Extract the first valid JSON object from an LLM response."""
+    if isinstance(content, dict):
+        return content
+
+    if isinstance(content, list):
+        text_parts = []
+        for part in content:
+            if isinstance(part, str):
+                text_parts.append(part)
+            elif isinstance(part, dict) and isinstance(part.get("text"), str):
+                text_parts.append(part["text"])
+            elif isinstance(getattr(part, "text", None), str):
+                text_parts.append(part.text)
+        content = "\n".join(text_parts)
+
+    if not isinstance(content, str) or not content.strip():
+        raise ValueError("LLM API returned no textual JSON content")
+
+    decoder = json.JSONDecoder()
+    for index, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(content, index)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            return candidate
+
+    raise ValueError("LLM API response does not contain a valid JSON object")
+
+
+def compact_user_jobs_for_llm(user_jobs, max_jobs_per_group=20, max_text_chars=2000):
+    """Keep only bounded job-status fields needed by the intake agent."""
+    if not isinstance(user_jobs, dict):
+        return user_jobs
+
+    allowed_fields = (
+        "id",
+        "title",
+        "task_title",
+        "type",
+        "job_type",
+        "status",
+        "created_time",
+        "updated_time",
+        "completed_time",
+        "completion_feedback",
+        "error",
+        "message",
+    )
+
+    def compact_job(job):
+        if not isinstance(job, dict):
+            return {"value": str(job)[:max_text_chars]}
+        compacted = {}
+        for field in allowed_fields:
+            value = job.get(field)
+            if value is None:
+                continue
+            if isinstance(value, (str, int, float, bool)):
+                compacted[field] = (
+                    value[:max_text_chars] if isinstance(value, str) else value
+                )
+        return compacted
+
+    return {
+        "user_id": user_jobs.get("user_id"),
+        "pending_jobs": [
+            compact_job(job)
+            for job in (user_jobs.get("pending_jobs") or [])[:max_jobs_per_group]
+        ],
+        "visibility_note": str(user_jobs.get("visibility_note", ""))[:max_text_chars],
+    }
 
 
 
@@ -410,8 +535,16 @@ class Agent:
         return session
 
     @staticmethod
-    def generate_llm(user_prompt, system_prompt, model=None, timeout=60, client=None):
-        """Generate and return a JSON dictionary using DeepSeek."""
+    def generate_ai_content(
+        user_prompt,
+        system_prompt,
+        model=None,
+        timeout=60,
+        client=None,
+        provider=None,
+        step=None,
+    ):
+        """Generate a JSON dictionary using the configured LLM provider."""
         def prompt_text(prompt, name):
             if isinstance(prompt, str):
                 if not prompt.strip():
@@ -430,43 +563,129 @@ class Agent:
         request_messages = [
             {
                 "role": "system",
-                "content": f"{system_content}\n\nReturn only a valid JSON object.",
+                "content": (
+                    f"{system_content}\n\n"
+                    "Your entire response must be exactly one valid JSON object. "
+                    "Do not include Markdown fences, commentary, or any text before "
+                    "or after the JSON object."
+                ),
             },
             {"role": "user", "content": user_content},
         ]
 
-        api_key = os.getenv("DEEPSEEK_API_KEY")
-        if client is None:
-            if not api_key:
-                raise RuntimeError("DEEPSEEK_API_KEY is missing from .env")
-            client = OpenAI(
-                api_key=api_key,
-                base_url=os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_URL),
-                timeout=timeout,
+        provider_name = (provider or os.getenv("LLM_PROVIDER", "deepseek")).strip().lower()
+        providers = {
+            "deepseek": {
+                "api_key": "DEEPSEEK_API_KEY",
+                "base_url": os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_URL),
+                "model": os.getenv("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
+            },
+            "gemini": {
+                "api_key": "GEMINI_API_KEY",
+                "base_url": os.getenv("GEMINI_BASE_URL", DEFAULT_GEMINI_URL),
+                "model": os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+            },
+            "openrouter": {
+                "api_key": "OPENROUTER_API_KEY",
+                "base_url": os.getenv("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_URL),
+                "model": os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
+            },
+        }
+        if provider_name not in providers:
+            supported = ", ".join(providers)
+            raise ValueError(
+                f"Unsupported LLM provider '{provider_name}'. Choose one of: {supported}"
             )
 
+        provider_config = providers[provider_name]
+        api_key_name = provider_config["api_key"]
+        api_key = os.getenv(api_key_name)
+        if client is None:
+            if not api_key:
+                raise RuntimeError(f"{api_key_name} is missing from .env")
+            default_headers = None
+            if provider_name == "openrouter":
+                default_headers = {
+                    "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://swarif.com"),
+                    "X-Title": os.getenv("OPENROUTER_APP_NAME", "Swarif"),
+                }
+            client = OpenAI(
+                api_key=api_key,
+                base_url=provider_config["base_url"],
+                timeout=timeout,
+                default_headers=default_headers,
+            )
+
+        selected_model = model or provider_config["model"]
+        started_at = time.monotonic()
         try:
             response = client.chat.completions.create(
-                model=model or os.getenv("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
+                model=selected_model,
                 messages=request_messages,
                 response_format={"type": "json_object"},
                 stream=False,
             )
         except OpenAIError as error:
-            raise RuntimeError(f"DeepSeek API request failed: {error}") from error
+            log_llm_call(
+                provider_name, selected_model, step, timeout, started_at, error=error
+            )
+            raise RuntimeError(
+                f"{provider_name.title()} API request failed: {error}"
+            ) from error
+        except Exception as error:
+            log_llm_call(
+                provider_name, selected_model, step, timeout, started_at, error=error
+            )
+            raise
 
-        if not response.choices or not response.choices[0].message.content:
-            raise RuntimeError("DeepSeek API returned an empty response")
+        if not response.choices:
+            error = ValueError(f"{provider_name.title()} API returned an empty response")
+            log_llm_call(
+                provider_name,
+                selected_model,
+                step,
+                timeout,
+                started_at,
+                response=response,
+                error=error,
+            )
+            raise RuntimeError(str(error)) from error
 
         try:
-            result = json.loads(response.choices[0].message.content)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("DeepSeek API returned invalid JSON") from error
+            result = parse_llm_json_object(response.choices[0].message.content)
+        except ValueError as error:
+            log_llm_call(
+                provider_name,
+                selected_model,
+                step,
+                timeout,
+                started_at,
+                response=response,
+                error=error,
+            )
+            raise RuntimeError(
+                f"{provider_name.title()} API returned invalid JSON: {error}"
+            ) from error
 
-        if not isinstance(result, dict):
-            raise RuntimeError("DeepSeek API response must be a JSON object")
+        log_llm_call(
+            provider_name, selected_model, step, timeout, started_at, response=response
+        )
 
         return result
+
+    @staticmethod
+    def generate_llm(
+        user_prompt, system_prompt, model=None, timeout=60, client=None, step=None
+    ):
+        """Backward-compatible wrapper for :meth:`generate_ai_content`."""
+        return Agent.generate_ai_content(
+            user_prompt,
+            system_prompt,
+            model=model,
+            timeout=timeout,
+            client=client,
+            step=step,
+        )
 
     @staticmethod
     def read_memory():
@@ -654,7 +873,7 @@ class Agent:
 
     @staticmethod
     def fetch_user_jobs(limit=50):
-        """Fetch active and inactive jobs for the currently signed-in user."""
+        """Fetch only pending jobs belonging to the currently signed-in user."""
         if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
             raise ValueError("limit must be a positive integer")
         session = Agent.read_session()
@@ -663,10 +882,19 @@ class Agent:
         user_id = session.get("user_id") or session.get("id")
         if not isinstance(user_id, str) or not user_id.strip():
             raise RuntimeError("The signed-in session is missing user_id")
+        pending_jobs = Agent.fetch_jobs("active", limit=limit)
+        if pending_jobs is False:
+            return False
+        pending_jobs = [
+            job
+            for job in pending_jobs
+            if isinstance(job, dict)
+            and str(job.get("user_id") or "").strip() == user_id.strip()
+            and str(job.get("status")) in {"0", "3"}
+        ]
         return {
             "user_id": user_id.strip(),
-            "active_jobs": Agent.fetch_jobs("active", limit=limit),
-            "inactive_jobs": Agent.fetch_jobs("inactive", limit=limit),
+            "pending_jobs": pending_jobs,
             "visibility_note": (
                 "The fetch-job API only returns jobs more than 15 seconds after "
                 "their creation time. A newer job may be submitted but not visible yet."
@@ -927,7 +1155,9 @@ class Agent:
             }
         }
 
-        response = Agent.generate_llm(user_prompt, system_prompt)
+        response = Agent.generate_llm(
+            user_prompt, system_prompt, step="process_thoughts"
+        )
 
         next_action = response.get("next_action", "")
 
@@ -982,7 +1212,12 @@ class Agent:
 
     @staticmethod
     def decide_action_learning(
-        message, org_id, user_id, should_continue=None, on_step=None
+        message,
+        org_id,
+        user_id,
+        should_continue=None,
+        on_step=None,
+        on_job_created=None,
     ):
         """Interview the user about a company workflow during Learning mode."""
         if should_continue is not None and not should_continue():
@@ -1043,7 +1278,9 @@ describing what you are considering or intend to do in this step.
             "original_prompt": message,
             "learning_history_since_latest_start": learning_history,
         }
-        response = Agent.generate_llm(user_prompt, system_prompt)
+        response = Agent.generate_llm(
+            user_prompt, system_prompt, step="learning_intake"
+        )
         Agent._report_step(response, on_step, "Reviewing workflow")
         if should_continue is not None and not should_continue():
             return None
@@ -1103,6 +1340,7 @@ only 1 to 5 words describing this finalization step.
         response = Agent.generate_llm(
             {"learning_history_since_latest_start": learning_history},
             system_prompt,
+            step="learning_finalization",
         )
         Agent._report_step(response, on_step, "Finalizing learned workflow")
         title = response.get("task_title")
@@ -1122,6 +1360,8 @@ only 1 to 5 words describing this finalization step.
         )
         if not created_job:
             raise RuntimeError("The learning job was not submitted")
+        if on_job_created is not None:
+            on_job_created(created_job)
 
         Agent.reply_message(
             "I finished compiling the workflow and submitted it as a learning job."
@@ -1139,6 +1379,7 @@ only 1 to 5 words describing this finalization step.
         learning_mode=False,
         should_continue=None,
         on_step=None,
+        on_job_created=None,
     ):
         if should_continue is not None and not should_continue():
             return None
@@ -1161,17 +1402,73 @@ only 1 to 5 words describing this finalization step.
         }
 
         system_prompt = {
+            "role_boundary": """
+You are an intake-and-submission agent only. You never execute the requested
+work and must never evaluate the request against your own ability to execute
+it. Another worker receives and performs submitted jobs. All statements that
+express inability to execute or access something are forbidden in user-facing
+replies. Never change an operational request into a different deliverable.
+
+Never reject, refuse, decline, judge, block, discourage, or dismiss any task.
+Every user task must move through the same intake workflow: understand it,
+gather only genuinely missing information, prepare a complete job, obtain the
+required final confirmation, and submit it to the worker. Difficulty,
+unfamiliarity, unusual scope, or the intake agent's own limitations are never
+reasons to stop this workflow. The only permitted outcomes before submission
+are a focused request for missing information or a final summary requesting
+confirmation.
+            """,
             "behavior_policy": behavior,
             "learning_mode": bool(learning_mode),
             "general_instruction": """
 You are the task manager. You receive a user's task, gather everything needed
 to make it fully executable, and submit the complete task to a worker.
 
+You are NOT the worker that executes the task. Your role ends after you gather
+the requirements, obtain final confirmation, and successfully submit the job.
+Never reject, reinterpret, or replace a requested task merely because you
+cannot personally perform it, open an application, browse a website, control a
+device, access a service, or use a capability. Those are execution concerns for
+the worker. Do not tell the user that you cannot execute the task and do not
+offer a different result, such as providing instructions or a link, unless the
+user asks for that result. Instead, understand the requested outcome and
+prepare it as a job for the worker.
+
+Gather as much relevant information as the worker needs: the objective, target,
+expected result, scope, constraints, inputs, required access, and definition of
+done. Do not ask for details that are already explicit in the user's request or
+that the worker can determine safely during execution. A simple operational
+request with a named target and an obvious completion state may already be
+fully specified. Once the requirements are sufficient, present the final job
+summary and request confirmation according to the policy below.
+
+Resource discovery during execution is the worker's responsibility. A website,
+application, song, document, product, person, or other target is sufficiently
+identified when the worker can reasonably locate it from the user's words. The
+intake agent does not need to know the URL, path, application controls, or
+execution method. Do not ask what outcome the user wants when an action verb
+already states it: "open and play" means the completed result is that the named
+media is playing.
+
+For every operational request, preserve the user's stated action and intended
+result without substituting a different deliverable. When the action, target,
+and completion state are already identifiable, treat the request as ready for
+its final summary. Do not ask the user to choose an outcome they already stated,
+and never respond with an execution-capability disclaimer.
+
+If an earlier assistant message incorrectly refused a task and the user asks
+"why", "why not", or challenges the refusal, recover immediately. Briefly say
+the refusal was mistaken because execution belongs to the worker, then use the
+original request from chat_history_last_10 to present the final job summary and
+ask for confirmation. Do not repeat the refusal or restart clarification.
+
 Before choosing an action, always answer these four readiness questions using
 the persistent_memory, chat_history_last_10, and extra_data provided:
 1. Is the task clear and unambiguous?
-2. Do I know where to find every resource needed to perform the task?
-3. Are all required resources and details sufficient and accessible?
+2. Has the user identified each required resource well enough for the worker to
+   locate or discover it during execution?
+3. Does the worker have enough requirements to proceed, regardless of whether
+   this intake agent can access the resources or execution tools?
 4. Can I clearly imagine and describe the completed result of the task?
 
 Choose submit_job only when the answer to all four questions is yes, the
@@ -1204,13 +1501,15 @@ outside that user's folder. If tool_data already contains user_files, use that
 result and do not choose list_user_files again.
 
 You have a read-only fetch_user_jobs tool. Choose fetch_user_jobs whenever the
-user asks whether a job was submitted, whether it really exists, or asks to
-check its status. It fetches active and inactive jobs using the signed-in user
-ID; never ask the user for a different user ID. If tool_data already contains
+user asks whether a pending job was submitted, whether it exists in the active
+queue, or asks for its pending status. It fetches only pending jobs belonging
+to the signed-in user; it never fetches completed jobs or another user's jobs.
+Never ask the user for a different user ID. If tool_data already contains
 user_jobs, use that evidence and do not choose fetch_user_jobs again. Do not
-claim that a job exists unless it appears in user_jobs or the current submission
-call returned success. Respect the included 15-second visibility note for very
-recent submissions, and never resubmit a job merely because it is not visible.
+claim that a pending job exists unless it appears in user_jobs or the current
+submission call returned success. Respect the included 15-second visibility
+note for very recent submissions, and never resubmit a job merely because it is
+not visible.
 
 You have two read-only organization skill tools. list_custom_skills returns the
 titles of workflows and capabilities stored for the signed-in organization.
@@ -1278,7 +1577,52 @@ step_summary, short_summary is displayed live while the user waits.
             }
         }
 
-        response = Agent.generate_llm(user_prompt, system_prompt)
+        response = Agent.generate_llm(
+            user_prompt, system_prompt, step="decide_action"
+        )
+        response_action = response.get("next_action") if isinstance(response, dict) else None
+        response_args = response.get("args", {}) if isinstance(response, dict) else {}
+        response_message = (
+            response_args.get("message") if isinstance(response_args, dict) else None
+        )
+        rejection_markers = (
+            "i cannot ",
+            "i can't ",
+            "i am unable ",
+            "i'm unable ",
+            "i am not able ",
+            "i'm not able ",
+            "cannot help",
+            "can't help",
+            "cannot assist",
+            "can't assist",
+            "i won't ",
+            "i will not ",
+            "i must decline",
+            "i have to decline",
+            "not something i can",
+            "not able to open",
+            "not able to access",
+        )
+        if (
+            response_action == "send_message"
+            and isinstance(response_message, str)
+            and any(marker in response_message.casefold() for marker in rejection_markers)
+        ):
+            corrected_prompt = dict(system_prompt)
+            corrected_prompt["mandatory_correction"] = """
+Your previous draft violated the role boundary by rejecting the task or
+discussing the intake agent's ability to execute it. Discard it. Continue the
+intake workflow for the original request as a job for another worker. Ask only
+for genuinely missing requirements; otherwise present the final unsubmitted
+job summary and ask for confirmation now. Do not mention rejection,
+capabilities, inability, alternatives, or this correction.
+            """
+            response = Agent.generate_llm(
+                user_prompt,
+                corrected_prompt,
+                step="decide_action_role_correction",
+            )
         Agent._report_step(response, on_step, "Reviewing request")
 
         if should_continue is not None and not should_continue():
@@ -1309,19 +1653,19 @@ step_summary, short_summary is displayed live while the user waits.
             )
 
             if is_success:
+                if on_job_created is not None:
+                    on_job_created(is_success)
                 Agent.update_context_memory(
                     "notify_user",
                     step_summary or "The complete task was submitted successfully.",
                 )
-                return Agent.decide_action(
-                    f"System: The {job_type} job was submitted successfully. Inform "
-                    "the user without submitting it again.",
-                    org_id,
-                    user_id,
-                    reset_context=False,
-                    learning_mode=learning_mode,
-                    should_continue=should_continue,
-                    on_step=on_step,
+                submitted_title = (
+                    title.strip()
+                    if isinstance(title, str) and title.strip()
+                    else f"{job_type} job"
+                )
+                return Agent.reply_message(
+                    f'The job "{submitted_title}" was submitted successfully.'
                 )
         elif next_action == "list_user_files":
             if should_continue is not None and not should_continue():
@@ -1340,27 +1684,30 @@ step_summary, short_summary is displayed live while the user waits.
                 learning_mode=learning_mode,
                 should_continue=should_continue,
                 on_step=on_step,
+                on_job_created=on_job_created,
             )
         elif next_action == "fetch_user_jobs":
             if should_continue is not None and not should_continue():
                 return None
             user_jobs = Agent.fetch_user_jobs()
-            active_count = len(user_jobs["active_jobs"]) if user_jobs else 0
-            inactive_count = len(user_jobs["inactive_jobs"]) if user_jobs else 0
+            pending_count = len(user_jobs["pending_jobs"]) if user_jobs else 0
             Agent.update_context_memory(
                 "decide_action",
-                f"Checked signed-in user jobs; found {active_count} active and "
-                f"{inactive_count} inactive jobs.",
+                f"Checked signed-in user's queue; found {pending_count} pending jobs.",
             )
             return Agent.decide_action(
                 message,
                 org_id,
                 user_id,
                 reset_context=False,
-                tool_data={**(tool_data or {}), "user_jobs": user_jobs},
+                tool_data={
+                    **(tool_data or {}),
+                    "user_jobs": compact_user_jobs_for_llm(user_jobs),
+                },
                 learning_mode=learning_mode,
                 should_continue=should_continue,
                 on_step=on_step,
+                on_job_created=on_job_created,
             )
         elif next_action == "list_custom_skills":
             if should_continue is not None and not should_continue():
@@ -1382,6 +1729,7 @@ step_summary, short_summary is displayed live while the user waits.
                 learning_mode=learning_mode,
                 should_continue=should_continue,
                 on_step=on_step,
+                on_job_created=on_job_created,
             )
         elif next_action == "read_custom_skills":
             if should_continue is not None and not should_continue():
@@ -1404,6 +1752,7 @@ step_summary, short_summary is displayed live while the user waits.
                 learning_mode=learning_mode,
                 should_continue=should_continue,
                 on_step=on_step,
+                on_job_created=on_job_created,
             )
 
         return False
