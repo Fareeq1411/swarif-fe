@@ -4,8 +4,13 @@
     {
       "step_no": 1,
       "step": "decide_action",
-      "summary": "Submitting the confirmed invoice submission job."
+      "summary": "Inspected the user's Swarif Files folder; found 79 entries."
+    },
+    {
+      "step_no": 2,
+      "step": "decide_action",
+      "summary": "User explicitly confirmed the unchanged final summary for entering 100 purchase orders from scenario_1/purchase_orders_100.xlsx into the ERP invoice section at http://127.0.0.1:5000/. Scope is unchanged, all requirements are complete, and no prior submission of this job exists, so the job is submitted now with the exact workspace path."
     }
   ],
-  "step_count": 1
+  "step_count": 2
 }

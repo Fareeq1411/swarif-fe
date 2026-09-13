@@ -235,6 +235,47 @@ class TaskLifecycleTests(unittest.TestCase):
 
         self.assertEqual(reported_jobs, [created_job])
 
+    def test_decide_action_retries_submit_job_with_missing_title(self):
+        responses = [
+            {
+                "next_action": "submit_job",
+                "args": {
+                    "task_title": "",
+                    "task_prompt": {"instructions": "Prepare the report"},
+                    "extra_data": {},
+                },
+            },
+            {
+                "next_action": "submit_job",
+                "args": {
+                    "task_title": "Prepare Monthly Report",
+                    "task_prompt": {"instructions": "Prepare the report"},
+                    "extra_data": {},
+                },
+            },
+        ]
+
+        with (
+            patch.object(Agent, "reset_context_memory"),
+            patch.object(Agent, "fetch_chat", return_value=[]),
+            patch.object(Agent, "read_memory", return_value=""),
+            patch.object(Agent, "get_context_memory", return_value={}),
+            patch.object(Agent, "extra_data", return_value={}),
+            patch.object(Agent, "read_behavior", return_value=""),
+            patch.object(Agent, "generate_llm", side_effect=responses) as generate,
+            patch.object(Agent, "submit_job", return_value={"id": "job-1"}) as submit,
+            patch.object(Agent, "update_context_memory"),
+            patch.object(Agent, "reply_message", return_value=True),
+        ):
+            Agent.decide_action("Prepare it", "org-1", "user-1")
+
+        self.assertEqual(generate.call_count, 2)
+        self.assertEqual(submit.call_args.args[0], "Prepare Monthly Report")
+        self.assertIn(
+            "omitted the required task_title",
+            generate.call_args.args[1]["mandatory_correction"],
+        )
+
     def test_decide_action_retries_execution_refusal(self):
         responses = [
             {

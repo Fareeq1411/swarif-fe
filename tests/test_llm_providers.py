@@ -26,6 +26,59 @@ class RecordingClient:
 
 
 class LlmProviderTests(unittest.TestCase):
+    def test_connection_settings_are_saved_to_env_and_removed_from_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env_path = root / ".env"
+            session_path = root / "sessions.json"
+            session_path.write_text(json.dumps({
+                "id": "user-1",
+                "user_id": "user-1",
+                "agent_ip": "192.168.1.10",
+                "server_port": 9000,
+                "agent_is_local": False,
+            }), encoding="utf-8")
+            environment = {
+                "SWARIF_AGENT_IP": "",
+                "SWARIF_AGENT_PORT": "8767",
+                "SWARIF_AGENT_IS_LOCAL": "false",
+            }
+            with (
+                patch.object(agent, "ENV_PATH", env_path),
+                patch.dict(os.environ, environment),
+            ):
+                saved = Agent.save_connection_settings(
+                    "127.0.0.1", 8767, True, session_path
+                )
+
+            persisted = env_path.read_text(encoding="utf-8")
+            session = json.loads(session_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(saved["agent_ip"], "127.0.0.1")
+        self.assertIn("SWARIF_AGENT_IP=127.0.0.1", persisted)
+        self.assertIn("SWARIF_AGENT_IS_LOCAL=true", persisted)
+        self.assertNotIn("agent_ip", session)
+        self.assertNotIn("server_port", session)
+        self.assertNotIn("agent_is_local", session)
+
+    def test_list_user_files_returns_exact_recursive_workspace_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = root / "Client Reports"
+            reports.mkdir()
+            (reports / "Q3 final.xlsx").write_text("data", encoding="utf-8")
+            (root / "notes.txt").write_text("notes", encoding="utf-8")
+
+            with patch.object(Agent, "user_files_path", return_value=root):
+                result = Agent.list_user_files()
+
+        paths = [entry["path"] for entry in result["entries"]]
+        self.assertEqual(
+            paths,
+            ["Client Reports", "notes.txt", "Client Reports/Q3 final.xlsx"],
+        )
+        self.assertNotIn(str(root), paths)
+
     def test_fetch_user_jobs_only_returns_current_users_pending_jobs(self):
         fetched_jobs = [
             {"id": "pending", "user_id": "user-1", "status": 0},
@@ -85,6 +138,18 @@ class LlmProviderTests(unittest.TestCase):
             )
 
         self.assertEqual(client.calls[0]["model"], "vendor/model")
+        self.assertEqual(
+            client.calls[0]["extra_body"],
+            {"reasoning": {"effort": "low"}},
+        )
+
+    def test_reasoning_setting_is_only_sent_to_openrouter(self):
+        client = RecordingClient()
+        Agent.generate_ai_content(
+            "hello", "return data", provider="gemini", client=client
+        )
+
+        self.assertNotIn("extra_body", client.calls[0])
 
     def test_extracts_json_object_from_markdown_and_extra_text(self):
         client = RecordingClient(

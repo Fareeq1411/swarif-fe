@@ -7,12 +7,13 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from PyQt5.QtCore import QObject, QTimer, pyqtSignal
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QApplication
 
 from agent import Agent, DEFAULT_API_URL, SEND_MESSAGE_PATH
 from error_logger import install_exception_hooks, log
 from server_connection import ServerConnection
-from swarif_ui import SwarifWindow, partition_jobs_by_status
+from swarif_ui import SwarifWindow, partition_jobs_by_status, static_asset
 
 
 class SwarifBackend(QObject):
@@ -37,6 +38,7 @@ class SwarifBackend(QObject):
         self._agent_revision = 0
         self._agent_worker = None
         self._active_task = None
+        self._submitted_tasks = {}
         self._cancelled_job_ids = set()
         self._server_connection = None
         self._learning_mode = bool(window.learning_mode)
@@ -94,16 +96,23 @@ class SwarifBackend(QObject):
         if not job_id or not isinstance(user_id, str) or not user_id.strip():
             return None
         with self._agent_condition:
-            if self._active_task is not None:
-                return self._active_task.get("active_job_id")
-            self._active_task = {
-                "state": "executing",
-                "cancel_event": threading.Event(),
-                "active_job_id": job_id,
-                "org_id": str(org_id or "").strip(),
-                "user_id": user_id.strip(),
-                "cancel_requested": False,
-            }
+            task = self._submitted_tasks.get(job_id)
+            if task is None:
+                task = {
+                    "state": "executing",
+                    "cancel_event": threading.Event(),
+                    "active_job_id": job_id,
+                    "org_id": str(org_id or "").strip(),
+                    "user_id": user_id.strip(),
+                    "cancel_requested": False,
+                    "server_processing": True,
+                }
+                self._submitted_tasks[job_id] = task
+            else:
+                task["state"] = "executing"
+                task["server_processing"] = True
+            if self._active_task is None:
+                self._active_task = task
         log(
             f"Recovered active job_id={job_id} after restart "
             f"(processing_jobs={len(processing_jobs)})"
@@ -119,7 +128,16 @@ class SwarifBackend(QObject):
     def stop_current_task(self):
         """Invalidate this task and cancel only its submitted job, if any."""
         with self._agent_condition:
-            task = self._active_task
+            if self._active_task is not None and self._active_task.get("state") == "thinking":
+                task = self._active_task
+            else:
+                task = next(
+                    (
+                        item for item in self._submitted_tasks.values()
+                        if item.get("server_processing") is True
+                    ),
+                    self._active_task,
+                )
             if task is None or task["state"] not in {"thinking", "executing"}:
                 return
             task["state"] = "stopping"
@@ -177,7 +195,9 @@ class SwarifBackend(QObject):
                 if notice == "Task cancelled":
                     notice = "Cancellation failed: cancellation was not confirmed"
             if accepted:
-                self._active_task = None
+                if self._active_task is task:
+                    self._active_task = None
+                self._submitted_tasks.pop(str(task.get("active_job_id") or ""), None)
                 task["active_job_id"] = None
                 task["state"] = "idle"
                 task["cancel_pending"] = False
@@ -294,7 +314,9 @@ class SwarifBackend(QObject):
         """Seed chats.json with the latest server messages after Home opens."""
         def worker():
             try:
-                synchronized = Agent.sync_chat_from_database()
+                synchronized = Agent.sync_chat_from_database(
+                    limit=self.window.chat_history_limit
+                )
                 if synchronized is False:
                     return
                 self.chat_file_changed.emit()
@@ -309,7 +331,10 @@ class SwarifBackend(QObject):
             return
         log(f"Job completion received for job_id={job_id}")
         with self._agent_condition:
-            task = self._active_task
+            task = self._submitted_tasks.get(str(job_id))
+            if task is None and self._active_task is not None:
+                if self._active_task.get("active_job_id") == job_id:
+                    task = self._active_task
             if (
                 task is None
                 or task.get("active_job_id") != job_id
@@ -337,13 +362,12 @@ class SwarifBackend(QObject):
         if job_id in self._cancelled_job_ids:
             return
         with self._agent_condition:
-            completion_task = self._active_task
+            completion_task = self._submitted_tasks.get(str(job_id))
 
         def still_current():
             with self._agent_condition:
                 return (
                     completion_task is not None
-                    and self._active_task is completion_task
                     and completion_task["state"] in {"thinking", "executing"}
                     and not completion_task["cancel_event"].is_set()
                 )
@@ -383,6 +407,7 @@ class SwarifBackend(QObject):
             self.backend_error.emit(str(error))
         finally:
             with self._agent_condition:
+                self._submitted_tasks.pop(str(job_id), None)
                 if (
                     self._active_task is not None
                     and (
@@ -402,6 +427,13 @@ class SwarifBackend(QObject):
         """Ignore progress arriving after this task was cancelled."""
         if job_id in self._cancelled_job_ids:
             return
+        with self._agent_condition:
+            task = self._submitted_tasks.get(str(job_id))
+            if task is not None:
+                task["state"] = "executing"
+                task["server_processing"] = True
+        if task is not None:
+            self._emit_task_state("executing")
         self.window.update_job_progress(job_id, current_progress)
 
     def send_user_message(self, message):
@@ -561,6 +593,8 @@ class SwarifBackend(QObject):
                     else:
                         task["active_job_id"] = job_id.strip()
                         task["state"] = "executing"
+                        task["server_processing"] = False
+                        self._submitted_tasks[job_id.strip()] = task
                         log(f"job_id captured after submission: {task['active_job_id']}")
                         should_cancel = False
                         self._emit_task_state("executing")
@@ -760,12 +794,14 @@ class SwarifBackend(QObject):
 
 def main():
     install_exception_hooks()
+    Agent.migrate_session_connection_settings()
     app = QApplication(sys.argv)
     app.setApplicationName("Swarif")
+    app.setWindowIcon(QIcon(str(static_asset("Swarif_Logo.ico"))))
     window = SwarifWindow()
     backend = SwarifBackend(window)
     window.backend = backend
-    server_connection = ServerConnection(Agent.read_session, parent=app)
+    server_connection = ServerConnection(Agent.server_connection_config, parent=app)
     backend.set_server_connection(server_connection)
     server_connection.status_changed.connect(window.set_server_connected)
     server_connection.completion_received.connect(backend.receive_job_completion)

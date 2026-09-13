@@ -10,6 +10,8 @@ from PyInstaller.utils.hooks import collect_data_files
 datas = collect_data_files("qtawesome")
 datas.append((".env.example", "."))
 datas.append(("FRONT_AGENT_BEHAVIOR.md", "."))
+datas.append(("static/Swarif_Logo.svg", "static"))
+datas.append(("static/Swarif_Logo.ico", "static"))
 runtime_config_dir = Path(tempfile.mkdtemp(prefix="swarif-runtime-config-"))
 runtime_env = runtime_config_dir / ".env"
 shutil.copyfile(Path(SPECPATH) / ".env.example", runtime_env)
@@ -44,6 +46,7 @@ if sys.platform == "win32":
         upx=True,
         console=False,
         disable_windowed_traceback=False,
+        icon=str(Path(SPECPATH) / "static" / "Swarif_Logo.ico"),
     )
 else:
     exe = EXE(

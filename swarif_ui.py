@@ -1,23 +1,28 @@
 import json
 import ipaddress
-import os
-import platform
+import shutil
 import socket
-import subprocess
 import sys
+import threading
 from datetime import datetime
 
-from PyQt5.QtCore import QPoint, QRectF, QSize, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from pathlib import Path
+
+from PyQt5.QtCore import QEvent, QMimeData, QPoint, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QIcon, QPainter, QPixmap, QTransform
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
     QDialog,
+    QFileDialog,
+    QFileIconProvider,
     QFrame,
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QInputDialog,
+    QMenu,
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
@@ -25,6 +30,8 @@ from PyQt5.QtWidgets import (
     QSizePolicy,
     QSpacerItem,
     QStackedWidget,
+    QTreeWidget,
+    QTreeWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -43,56 +50,82 @@ PALE_BLUE = "#EAF3FF"
 MAX_CONNECTION_LOG_BYTES = 1024 * 1024
 
 
+def static_asset(name):
+    """Return a development or PyInstaller-bundled static asset path."""
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base_path / "static" / name
+
+
 class BotAvatar(QWidget):
-    """Small code-drawn avatar so the prototype needs no image assets."""
+    """Swarif's branded avatar for assistant messages and surfaces."""
 
     def __init__(self, size=38, parent=None):
         super().__init__(parent)
         self.setFixedSize(size, size)
+        self.logo = QPixmap(str(static_asset("Swarif_Logo.svg")))
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         side = min(self.width(), self.height())
-
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor("#E4F0FF"))
         painter.drawEllipse(0, 0, side, side)
+        if self.logo.isNull():
+            return
+        logo_side = max(1, int(side * 0.68))
+        scaled = self.logo.scaled(
+            QSize(logo_side, logo_side), Qt.KeepAspectRatio, Qt.SmoothTransformation
+        )
+        left = (self.width() - scaled.width()) // 2
+        top = (self.height() - scaled.height()) // 2
+        painter.drawPixmap(left, top, scaled)
 
-        margin = side * 0.22
-        body = QRectF(margin, side * 0.26, side - margin * 2, side * 0.52)
-        painter.setBrush(QColor(BLUE))
-        painter.drawRoundedRect(body, side * 0.16, side * 0.16)
 
-        painter.setBrush(QColor("white"))
-        eye = side * 0.09
-        painter.drawEllipse(QRectF(side * 0.34, side * 0.43, eye, eye))
-        painter.drawEllipse(QRectF(side * 0.57, side * 0.43, eye, eye))
+class UserAvatar(QWidget):
+    """Generic user display picture shown beside the signed-in user's name."""
 
-        painter.setPen(QPen(QColor("white"), max(1.4, side * 0.04)))
-        painter.drawArc(
-            QRectF(side * 0.40, side * 0.49, side * 0.21, side * 0.17),
-            200 * 16,
-            140 * 16,
+    def __init__(self, size=34, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(size, size)
+        self.icon = qta.icon("fa5s.user", color="#2478EB")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        side = min(self.width(), self.height())
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor("#DCEBFD"))
+        painter.drawEllipse(0, 0, side, side)
+        margin = max(6, int(side * 0.25))
+        self.icon.paint(
+            painter,
+            margin,
+            margin,
+            max(1, self.width() - margin * 2),
+            max(1, self.height() - margin * 2),
         )
 
 
 class BrandMark(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedSize(39, 28)
+        self.setFixedSize(36, 36)
+        self.logo = QPixmap(str(static_asset("Swarif_Logo.svg")))
 
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor(BLUE), 2.8, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        path = QPainterPath()
-        path.moveTo(9, 22)
-        path.cubicTo(2, 22, 2, 12, 10, 11)
-        path.cubicTo(12, 2, 26, 1, 29, 11)
-        path.cubicTo(39, 11, 39, 22, 31, 22)
-        path.closeSubpath()
-        painter.drawPath(path)
+        if not self.logo.isNull():
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor("#F3F7FC"))
+            painter.drawEllipse(1, 1, self.width() - 2, self.height() - 2)
+            scaled = self.logo.scaled(
+                QSize(26, 26), Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
+            left = (self.width() - scaled.width()) // 2
+            top = (self.height() - scaled.height()) // 2
+            painter.drawPixmap(left, top, scaled)
 
 
 class TitleBar(QFrame):
@@ -112,7 +145,7 @@ class TitleBar(QFrame):
 
         self.mark = BrandMark()
         layout.addWidget(self.mark)
-        self.brand = QLabel("swarif")
+        self.brand = QLabel("Swarif")
         self.brand.setObjectName("brand")
         layout.addWidget(self.brand)
         layout.addStretch()
@@ -167,11 +200,19 @@ class TitleBar(QFrame):
 class NavButton(QPushButton):
     def __init__(self, icon_name, text, active=False, parent=None):
         super().__init__(text, parent)
-        self.setObjectName("navActive" if active else "navButton")
-        self.setIcon(qta.icon(icon_name, color="white" if active else "#40516A"))
+        self.icon_name = icon_name
         self.setIconSize(QSize(17, 17))
         self.setCursor(Qt.PointingHandCursor)
         self.setFixedHeight(46)
+        self.set_active(active)
+
+    def set_active(self, active):
+        self.setObjectName("navActive" if active else "navButton")
+        self.setIcon(
+            qta.icon(self.icon_name, color="white" if active else "#40516A")
+        )
+        self.style().unpolish(self)
+        self.style().polish(self)
 
 
 class ToggleSwitch(QCheckBox):
@@ -225,18 +266,22 @@ class Sidebar(QFrame):
         layout.setContentsMargins(13, 18, 13, 17)
         layout.setSpacing(9)
 
-        chat_button = NavButton("fa5s.th-large", "Chat", active=active_page == "chat")
-        jobs_button = NavButton("fa5s.briefcase", "Jobs", active=active_page == "jobs")
-        chat_button.clicked.connect(self.chat_clicked)
-        jobs_button.clicked.connect(self.jobs_clicked)
-        layout.addWidget(chat_button)
-        layout.addWidget(jobs_button)
-        files_button = NavButton("fa5s.folder-open", "Files", active=active_page == "files")
-        settings_button = NavButton("fa5s.cog", "Settings", active=active_page == "settings")
-        files_button.clicked.connect(self.files_clicked)
-        settings_button.clicked.connect(self.settings_clicked)
-        layout.addWidget(files_button)
-        layout.addWidget(settings_button)
+        self.nav_buttons = {
+            "chat": NavButton("fa5s.comment-alt", "Chat", active=active_page == "chat"),
+            "jobs": NavButton("fa5s.briefcase", "Jobs", active=active_page == "jobs"),
+            "files": NavButton("fa5s.folder-open", "Files", active=active_page == "files"),
+        }
+        self.nav_buttons["chat"].clicked.connect(
+            lambda: self.activate_and_emit("chat", self.chat_clicked)
+        )
+        self.nav_buttons["jobs"].clicked.connect(
+            lambda: self.activate_and_emit("jobs", self.jobs_clicked)
+        )
+        self.nav_buttons["files"].clicked.connect(
+            lambda: self.activate_and_emit("files", self.files_clicked)
+        )
+        for button in self.nav_buttons.values():
+            layout.addWidget(button)
         layout.addStretch()
 
         profile = QFrame()
@@ -244,7 +289,7 @@ class Sidebar(QFrame):
         profile_layout = QHBoxLayout(profile)
         profile_layout.setContentsMargins(5, 8, 3, 8)
         profile_layout.setSpacing(8)
-        profile_layout.addWidget(BotAvatar(34))
+        profile_layout.addWidget(UserAvatar(34))
 
         profile_copy = QVBoxLayout()
         profile_copy.setSpacing(0)
@@ -260,8 +305,47 @@ class Sidebar(QFrame):
         logout = NavButton("fa5s.sign-out-alt", "Log out")
         logout.setObjectName("logoutButton")
         logout.clicked.connect(self.logout_clicked)
-        layout.addWidget(logout)
+        settings_button = QPushButton()
+        settings_button.setObjectName(
+            "settingsIconActive" if active_page == "settings" else "settingsIconButton"
+        )
+        settings_button.setIcon(
+            qta.icon(
+                "fa5s.cog",
+                color="white" if active_page == "settings" else "#40516A",
+            )
+        )
+        settings_button.setIconSize(QSize(17, 17))
+        settings_button.setFixedSize(46, 46)
+        settings_button.setCursor(Qt.PointingHandCursor)
+        settings_button.setToolTip("Settings")
+        settings_button.setAccessibleName("Settings")
+        settings_button.clicked.connect(
+            lambda: self.activate_and_emit("settings", self.settings_clicked)
+        )
+        self.settings_button = settings_button
+
+        actions = QHBoxLayout()
+        actions.setContentsMargins(0, 0, 0, 0)
+        actions.setSpacing(6)
+        actions.addWidget(logout, 1)
+        actions.addWidget(settings_button)
+        layout.addLayout(actions)
         self.set_connected(connected)
+
+    def activate_and_emit(self, page, signal):
+        for name, button in self.nav_buttons.items():
+            button.set_active(name == page)
+        settings_active = page == "settings"
+        self.settings_button.setObjectName(
+            "settingsIconActive" if settings_active else "settingsIconButton"
+        )
+        self.settings_button.setIcon(
+            qta.icon("fa5s.cog", color="white" if settings_active else "#40516A")
+        )
+        self.settings_button.style().unpolish(self.settings_button)
+        self.settings_button.style().polish(self.settings_button)
+        signal.emit()
 
     def set_connected(self, connected):
         self.status.setText("●  Connected" if connected else "●  Disconnected")
@@ -387,6 +471,402 @@ def is_local_agent_ip(agent_ip):
     except OSError:
         pass
     return str(address) in local_addresses
+
+
+def human_file_size(size):
+    value = float(size)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{int(value)} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+
+
+class FileTree(QTreeWidget):
+    files_dropped = pyqtSignal(list)
+    SWARIF_DRAG_FORMAT = "application/x-swarif-copy-source"
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("fileTree")
+        self.setColumnCount(4)
+        self.setHeaderLabels(["Name", "Date modified", "Type", "Size"])
+        self.setRootIsDecorated(False)
+        self.setAlternatingRowColors(True)
+        self.setSelectionMode(QTreeWidget.ExtendedSelection)
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QTreeWidget.DragDrop)
+        self.setDefaultDropAction(Qt.CopyAction)
+        self.setDropIndicatorShown(True)
+        self.setColumnWidth(0, 265)
+        self.setColumnWidth(1, 145)
+        self.setColumnWidth(2, 90)
+        self.setColumnWidth(3, 75)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(self.SWARIF_DRAG_FORMAT):
+            event.ignore()
+            return
+        if event.mimeData().hasUrls() and any(url.isLocalFile() for url in event.mimeData().urls()):
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(self.SWARIF_DRAG_FORMAT):
+            event.ignore()
+            return
+        if event.mimeData().hasUrls():
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            return
+        event.ignore()
+
+    def dropEvent(self, event):
+        if event.mimeData().hasFormat(self.SWARIF_DRAG_FORMAT):
+            event.ignore()
+            return
+        paths = [url.toLocalFile() for url in event.mimeData().urls() if url.isLocalFile()]
+        if paths:
+            self.files_dropped.emit(paths)
+            event.setDropAction(Qt.CopyAction)
+            event.accept()
+            return
+        event.ignore()
+
+    def startDrag(self, _supported_actions):
+        paths = []
+        for item in self.selectedItems():
+            value = item.data(0, Qt.UserRole)
+            if value and Path(value).exists():
+                paths.append(Path(value))
+        if not paths:
+            return
+
+        mime_data = QMimeData()
+        mime_data.setUrls([QUrl.fromLocalFile(str(path)) for path in paths])
+        mime_data.setData(self.SWARIF_DRAG_FORMAT, b"copy-only")
+        drag = QDrag(self)
+        drag.setMimeData(mime_data)
+        drag.setPixmap(self.icon_provider_pixmap(paths[0]))
+        drag.exec_(Qt.CopyAction, Qt.CopyAction)
+
+    @staticmethod
+    def icon_provider_pixmap(path):
+        provider = QFileIconProvider()
+        icon_type = QFileIconProvider.Folder if path.is_dir() else QFileIconProvider.File
+        return provider.icon(icon_type).pixmap(32, 32)
+
+
+class FilesPanel(QFrame):
+    """An Explorer-style view that only copies imports into a user's workspace."""
+
+    def __init__(self, root_path, parent=None):
+        super().__init__(parent)
+        self.setObjectName("filesPanel")
+        self.root_path = Path(root_path)
+        self.current_path = self.root_path
+        self.icon_provider = QFileIconProvider()
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 22, 24, 22)
+        layout.setSpacing(12)
+
+        heading = QHBoxLayout()
+        copy = QVBoxLayout()
+        copy.setSpacing(3)
+        title = QLabel("Files")
+        title.setObjectName("sectionTitle")
+        subtitle = QLabel("Files available to Swarif. Imports are always copied; originals stay in place.")
+        subtitle.setObjectName("sectionSubtitle")
+        subtitle.setWordWrap(True)
+        copy.addWidget(title)
+        copy.addWidget(subtitle)
+        heading.addLayout(copy, 1)
+
+        self.add_button = QPushButton("  Add files")
+        self.add_button.setObjectName("filesPrimary")
+        self.add_button.setIcon(qta.icon("fa5s.plus", color="white"))
+        self.add_button.clicked.connect(self.choose_files)
+        folder_button = QPushButton("  New folder")
+        folder_button.setObjectName("filesSecondary")
+        folder_button.setIcon(qta.icon("fa5s.folder-plus", color=BLUE))
+        folder_button.clicked.connect(self.create_folder)
+        heading.addWidget(folder_button)
+        heading.addWidget(self.add_button)
+        layout.addLayout(heading)
+
+        navigation = QHBoxLayout()
+        self.back_button = QPushButton()
+        self.back_button.setObjectName("filesBack")
+        self.back_button.setIcon(qta.icon("fa5s.arrow-left", color="#526176"))
+        self.back_button.setToolTip("Back to parent folder")
+        self.back_button.clicked.connect(self.go_back)
+        self.location = QLabel()
+        self.location.setObjectName("filesLocation")
+        navigation.addWidget(self.back_button)
+        navigation.addWidget(self.location, 1)
+        layout.addLayout(navigation)
+
+        self.tree = FileTree()
+        self.tree.itemDoubleClicked.connect(self.open_item)
+        self.tree.files_dropped.connect(self.copy_paths)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self.show_context_menu)
+        layout.addWidget(self.tree, 1)
+
+        self.empty = QLabel("Drop files here to copy them into this folder")
+        self.empty.setObjectName("filesHint")
+        self.empty.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.empty)
+        self.refresh()
+
+    def safe_child(self, path):
+        try:
+            Path(path).resolve(strict=False).relative_to(self.root_path.resolve(strict=False))
+            return True
+        except ValueError:
+            return False
+
+    def refresh(self):
+        self.tree.clear()
+        try:
+            if not self.root_path.exists():
+                self.root_path.mkdir(parents=True, exist_ok=True)
+            entries = sorted(
+                self.current_path.iterdir(),
+                key=lambda entry: (not entry.is_dir(), entry.name.casefold()),
+            )
+        except OSError as error:
+            self.empty.setText(f"Files folder is unavailable: {error}")
+            self.empty.show()
+            self.add_button.setEnabled(False)
+            return
+
+        self.add_button.setEnabled(True)
+        relative = self.current_path.relative_to(self.root_path)
+        self.location.setText("Swarif Files" + (f" / {relative.as_posix()}" if relative.parts else ""))
+        self.back_button.setEnabled(self.current_path != self.root_path)
+        for path in entries:
+            try:
+                stat = path.stat()
+                is_directory = path.is_dir()
+            except OSError:
+                continue
+            item = QTreeWidgetItem([
+                path.name,
+                datetime.fromtimestamp(stat.st_mtime).strftime("%d %b %Y, %I:%M %p"),
+                "File folder" if is_directory else (path.suffix[1:].upper() + " file" if path.suffix else "File"),
+                "" if is_directory else human_file_size(stat.st_size),
+            ])
+            item.setData(0, Qt.UserRole, str(path))
+            item.setIcon(0, self.icon_provider.icon(QFileIconProvider.Folder if is_directory else QFileIconProvider.File))
+            self.tree.addTopLevelItem(item)
+        self.empty.setText("Drop files here to copy them into this folder")
+        self.empty.setVisible(not entries)
+
+    def open_item(self, item, _column):
+        path = Path(item.data(0, Qt.UserRole))
+        if not self.safe_child(path):
+            return
+        if path.is_dir():
+            self.current_path = path
+            self.refresh()
+        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "Unable to open file", f"No application could open {path.name}.")
+
+    def selected_paths(self):
+        paths = [Path(item.data(0, Qt.UserRole)) for item in self.tree.selectedItems()]
+        return [path for path in paths if self.safe_child(path) and path != self.root_path]
+
+    def show_context_menu(self, position):
+        clicked = self.tree.itemAt(position)
+        if clicked is not None and not clicked.isSelected():
+            self.tree.clearSelection()
+            clicked.setSelected(True)
+            self.tree.setCurrentItem(clicked)
+        paths = self.selected_paths()
+
+        menu = QMenu(self)
+        open_action = menu.addAction("Open")
+        open_action.setEnabled(len(paths) == 1)
+        rename_action = menu.addAction("Rename")
+        rename_action.setEnabled(len(paths) == 1)
+        duplicate_action = menu.addAction("Duplicate")
+        duplicate_action.setEnabled(bool(paths))
+        menu.addSeparator()
+        copy_path_action = menu.addAction("Copy path")
+        copy_path_action.setEnabled(bool(paths))
+        delete_action = menu.addAction("Delete")
+        delete_action.setEnabled(bool(paths))
+        menu.addSeparator()
+        new_folder_action = menu.addAction("New folder")
+        refresh_action = menu.addAction("Refresh")
+
+        chosen = menu.exec_(self.tree.viewport().mapToGlobal(position))
+        if chosen == open_action and paths:
+            self.open_path(paths[0])
+        elif chosen == rename_action and paths:
+            self.rename_path(paths[0])
+        elif chosen == duplicate_action:
+            self.copy_paths([str(path) for path in paths])
+        elif chosen == copy_path_action:
+            QApplication.clipboard().setText("\n".join(str(path) for path in paths))
+        elif chosen == delete_action:
+            self.delete_paths(paths)
+        elif chosen == new_folder_action:
+            self.create_folder()
+        elif chosen == refresh_action:
+            self.refresh()
+
+    def open_path(self, path):
+        if not self.safe_child(path) or not path.exists():
+            return
+        if path.is_dir():
+            self.current_path = path
+            self.refresh()
+        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            QMessageBox.warning(self, "Unable to open file", f"No application could open {path.name}.")
+
+    def rename_path(self, path):
+        name, accepted = QInputDialog.getText(
+            self, "Rename", "New name:", QLineEdit.Normal, path.name
+        )
+        name = name.strip()
+        if not accepted or not name or name == path.name:
+            return
+        if not self.valid_name(name):
+            QMessageBox.warning(self, "Invalid name", "Enter a name without path separators.")
+            return
+        destination = path.with_name(name)
+        if destination.exists():
+            QMessageBox.warning(self, "Name already exists", f'An item named "{name}" already exists.')
+            return
+        try:
+            path.rename(destination)
+        except OSError as error:
+            log(error)
+            QMessageBox.warning(self, "Unable to rename item", str(error))
+            return
+        self.refresh()
+
+    def delete_paths(self, paths):
+        if not paths:
+            return
+        label = paths[0].name if len(paths) == 1 else f"{len(paths)} selected items"
+        answer = QMessageBox.warning(
+            self,
+            "Delete permanently?",
+            f'Delete {label}?\n\nThis removes it from the Swarif workspace and cannot be undone.',
+            QMessageBox.Yes | QMessageBox.Cancel,
+            QMessageBox.Cancel,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        failures = []
+        for path in paths:
+            if not self.safe_child(path) or path == self.root_path:
+                failures.append(path.name)
+                continue
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except OSError as error:
+                log(error)
+                failures.append(path.name)
+        self.refresh()
+        if failures:
+            QMessageBox.warning(self, "Some items were not deleted", "Unable to delete: " + ", ".join(failures))
+
+    def go_back(self):
+        if self.current_path != self.root_path:
+            self.current_path = self.current_path.parent
+            self.refresh()
+
+    def choose_files(self):
+        paths, _selected_filter = QFileDialog.getOpenFileNames(
+            self,
+            "Copy files into Swarif",
+            options=QFileDialog.DontUseNativeDialog,
+        )
+        if paths:
+            self.copy_paths(paths)
+
+    def available_destination(self, name):
+        destination = self.current_path / name
+        if not destination.exists():
+            return destination
+        source_name = Path(name)
+        stem = source_name.stem
+        suffix = source_name.suffix
+        number = 1
+        while True:
+            label = f"{stem} copy{f' {number}' if number > 1 else ''}{suffix}"
+            destination = self.current_path / label
+            if not destination.exists():
+                return destination
+            number += 1
+
+    def copy_paths(self, paths):
+        failures = []
+        copied = 0
+        for value in paths:
+            source = Path(value)
+            if not source.exists():
+                failures.append(source.name or str(source))
+                continue
+            destination = self.available_destination(source.name)
+            try:
+                destination.resolve(strict=False).relative_to(source.resolve(strict=False))
+                failures.append(source.name)
+                continue
+            except ValueError:
+                pass
+            try:
+                if source.is_dir() and not source.is_symlink():
+                    shutil.copytree(source, destination)
+                else:
+                    shutil.copy2(source, destination)
+                copied += 1
+            except OSError as error:
+                log(error)
+                failures.append(source.name)
+        self.refresh()
+        if failures:
+            QMessageBox.warning(
+                self,
+                "Some files were not copied",
+                "Unable to copy: " + ", ".join(failures),
+            )
+        elif copied:
+            self.empty.setText(f"Copied {copied} item{'s' if copied != 1 else ''}.")
+
+    def create_folder(self):
+        name, accepted = QInputDialog.getText(self, "New folder", "Folder name:")
+        name = name.strip()
+        if not accepted or not name:
+            return
+        if not self.valid_name(name):
+            QMessageBox.warning(self, "Invalid folder name", "Enter a folder name without path separators.")
+            return
+        destination = self.current_path / name
+        try:
+            destination.mkdir()
+        except FileExistsError:
+            QMessageBox.warning(self, "Folder already exists", f'A folder named "{name}" already exists.')
+            return
+        except OSError as error:
+            log(error)
+            QMessageBox.warning(self, "Unable to create folder", str(error))
+            return
+        self.refresh()
+
+    @staticmethod
+    def valid_name(name):
+        return bool(name) and name not in {".", ".."} and Path(name).name == name and "/" not in name and "\\" not in name
 
 
 class GrowingMessageEdit(QTextEdit):
@@ -956,7 +1436,7 @@ class JobsPanel(QFrame):
 
 
 class JobProgressBubble(QFrame):
-    def __init__(self, job, current_progress=None, parent=None):
+    def __init__(self, job, current_progress=None, started_at=None, parent=None):
         super().__init__(parent)
         self.setObjectName("jobProgressCard")
         layout = QVBoxLayout(self)
@@ -965,6 +1445,14 @@ class JobProgressBubble(QFrame):
         title = QLabel(f'Job title: "{job.get("title") or "Untitled job"}" is processing')
         title.setObjectName("jobProgressTitle")
         title.setWordWrap(True)
+        self.started_at = started_at or datetime.now()
+        self.worked_for = QLabel()
+        self.worked_for.setObjectName("jobWorkedFor")
+        self.worked_for.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        title_row = QHBoxLayout()
+        title_row.setSpacing(10)
+        title_row.addWidget(title, 1)
+        title_row.addWidget(self.worked_for, 0, Qt.AlignTop)
         label = QLabel("Current Progress:")
         label.setObjectName("jobProgressLabel")
         label_row = QHBoxLayout()
@@ -980,15 +1468,26 @@ class JobProgressBubble(QFrame):
         progress.setObjectName("jobProgressText")
         progress.setWordWrap(True)
         progress.setTextInteractionFlags(Qt.TextSelectableByMouse)
-        layout.addWidget(title)
+        layout.addLayout(title_row)
         layout.addLayout(label_row)
         layout.addWidget(progress)
+        self.elapsed_timer = QTimer(self)
+        self.elapsed_timer.setInterval(1000)
+        self.elapsed_timer.timeout.connect(self.update_elapsed_time)
+        self.elapsed_timer.start()
+        self.update_elapsed_time()
+
+    def update_elapsed_time(self):
+        elapsed = max(0, int((datetime.now() - self.started_at).total_seconds())) + 1
+        minutes, seconds = divmod(elapsed, 60)
+        duration = f"{minutes}m {seconds}s" if minutes else f"{seconds}s"
+        self.worked_for.setText(f"Worked for {duration}")
 
 
 class ChatPanel(QFrame):
     message_submitted = pyqtSignal(str)
     stop_requested = pyqtSignal()
-    learning_mode_changed = pyqtSignal(bool)
+    load_more_requested = pyqtSignal()
 
     def __init__(
         self,
@@ -996,12 +1495,15 @@ class ChatPanel(QFrame):
         newest_first=False,
         processing_jobs=None,
         job_progress=None,
+        job_started_at=None,
         agent_typing=False,
         agent_typing_summary="Thinking",
         learning_mode=False,
         scroll_to_bottom_on_show=False,
         initial_scroll_value=None,
         preserve_bottom_on_refresh=False,
+        has_more_messages=False,
+        history_scroll_anchor=None,
         parent=None,
     ):
         super().__init__(parent)
@@ -1009,26 +1511,6 @@ class ChatPanel(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        header = QFrame()
-        header.setObjectName("chatHeader")
-        header.setFixedHeight(76)
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(19, 11, 18, 11)
-        header_layout.setSpacing(11)
-        header_layout.addWidget(BotAvatar(44))
-
-        title = QLabel("Swarif")
-        title.setObjectName("assistantTitle")
-        header_layout.addWidget(title)
-        header_layout.addStretch()
-        self.learning_toggle = ToggleSwitch("Learning mode")
-        self.learning_toggle.setObjectName("learningToggle")
-        self.learning_toggle.setChecked(bool(learning_mode))
-        self.learning_toggle.setCursor(Qt.PointingHandCursor)
-        self.learning_toggle.toggled.connect(self.learning_mode_changed)
-        header_layout.addWidget(self.learning_toggle)
-        layout.addWidget(header)
 
         self.learning_banner = QLabel(
             'LEARNING MODE — Send "start" to start teaching the AI. '
@@ -1050,6 +1532,12 @@ class ChatPanel(QFrame):
         messages.setContentsMargins(18, 20, 18, 8)
         messages.setSpacing(2)
         valid_messages = [item for item in (chat_messages or []) if isinstance(item, dict)]
+        self.load_more_button = QPushButton("Load more")
+        self.load_more_button.setObjectName("loadMoreButton")
+        self.load_more_button.setCursor(Qt.PointingHandCursor)
+        self.load_more_button.setVisible(False)
+        self.load_more_button.clicked.connect(self.request_more_messages)
+        messages.addWidget(self.load_more_button, 0, Qt.AlignHCenter)
         if valid_messages:
             ordered_messages = reversed(valid_messages) if newest_first else valid_messages
             for item in ordered_messages:
@@ -1097,10 +1585,15 @@ class ChatPanel(QFrame):
         self.processing_layout.setSpacing(9)
         messages.addWidget(self.processing_container)
         messages.addItem(QSpacerItem(1, 1, QSizePolicy.Minimum, QSizePolicy.Expanding))
-        self.update_processing_jobs(processing_jobs or [], job_progress or {})
+        self.update_processing_jobs(
+            processing_jobs or [], job_progress or {}, job_started_at or {}
+        )
         scroll.setWidget(conversation)
         layout.addWidget(scroll, 1)
         self.chat_scroll = scroll
+        self.has_more_messages = bool(has_more_messages)
+        scroll.verticalScrollBar().valueChanged.connect(self.update_scroll_controls)
+        scroll.verticalScrollBar().rangeChanged.connect(self.update_scroll_controls)
         self.initial_scroll_active = bool(scroll_to_bottom_on_show)
         if scroll_to_bottom_on_show:
             scroll.verticalScrollBar().rangeChanged.connect(
@@ -1121,6 +1614,33 @@ class ChatPanel(QFrame):
             )
             QTimer.singleShot(0, self.keep_refresh_position)
             QTimer.singleShot(500, self.finish_refresh_position)
+        elif history_scroll_anchor is not None:
+            old_value, old_maximum = history_scroll_anchor
+            self._history_anchor_value = int(old_value)
+            self._history_anchor_maximum = int(old_maximum)
+            scroll.verticalScrollBar().rangeChanged.connect(self.keep_history_position)
+            QTimer.singleShot(0, self.keep_history_position)
+            QTimer.singleShot(500, self.finish_history_position)
+
+        self.jump_to_bottom_button = QPushButton(self.chat_scroll.viewport())
+        self.jump_to_bottom_button.setObjectName("jumpToBottomButton")
+        self.jump_to_bottom_button.setIcon(
+            qta.icon("fa5s.chevron-down", color="#40516A")
+        )
+        self.jump_to_bottom_button.setIconSize(QSize(13, 13))
+        self.jump_to_bottom_button.setFixedSize(34, 34)
+        self.jump_to_bottom_button.setCursor(Qt.PointingHandCursor)
+        self.jump_to_bottom_button.setToolTip("Jump to latest message")
+        self.jump_to_bottom_button.setAccessibleName("Jump to latest message")
+        jump_shadow = QGraphicsDropShadowEffect(self.jump_to_bottom_button)
+        jump_shadow.setBlurRadius(14)
+        jump_shadow.setOffset(0, 3)
+        jump_shadow.setColor(QColor(38, 67, 103, 70))
+        self.jump_to_bottom_button.setGraphicsEffect(jump_shadow)
+        self.jump_to_bottom_button.clicked.connect(self.scroll_to_bottom)
+        self.jump_to_bottom_button.hide()
+        self.chat_scroll.viewport().installEventFilter(self)
+        self.position_jump_to_bottom_button()
 
         composer_wrap = QWidget()
         composer_layout = QVBoxLayout(composer_wrap)
@@ -1131,10 +1651,59 @@ class ChatPanel(QFrame):
         composer.stop_requested.connect(self.stop_requested)
         composer_layout.addWidget(composer)
         layout.addWidget(composer_wrap)
+        QTimer.singleShot(0, self.update_scroll_controls)
 
     def scroll_to_bottom(self):
         scrollbar = self.chat_scroll.verticalScrollBar()
         scrollbar.setValue(scrollbar.maximum())
+
+    def update_scroll_controls(self, *_args):
+        scrollbar = self.chat_scroll.verticalScrollBar()
+        value = scrollbar.value()
+        self.load_more_button.setVisible(
+            self.has_more_messages and int(value) <= 2
+        )
+        away_from_bottom = value < max(0, scrollbar.maximum() - 2)
+        self.jump_to_bottom_button.setVisible(away_from_bottom)
+        if away_from_bottom:
+            self.position_jump_to_bottom_button()
+            self.jump_to_bottom_button.raise_()
+
+    def position_jump_to_bottom_button(self):
+        viewport = self.chat_scroll.viewport()
+        margin = 14
+        self.jump_to_bottom_button.move(
+            max(margin, viewport.width() - self.jump_to_bottom_button.width() - margin),
+            max(margin, viewport.height() - self.jump_to_bottom_button.height() - margin),
+        )
+
+    def eventFilter(self, watched, event):
+        if watched is self.chat_scroll.viewport() and event.type() == QEvent.Resize:
+            self.position_jump_to_bottom_button()
+        return super().eventFilter(watched, event)
+
+    def request_more_messages(self):
+        self.load_more_button.setEnabled(False)
+        self.load_more_button.setText("Loading…")
+        self.load_more_requested.emit()
+
+    def show_load_more_error(self):
+        self.load_more_button.setEnabled(True)
+        self.load_more_button.setText("Couldn't load — try again")
+
+    def keep_history_position(self, *_args):
+        scrollbar = self.chat_scroll.verticalScrollBar()
+        added_height = max(0, scrollbar.maximum() - self._history_anchor_maximum)
+        scrollbar.setValue(self._history_anchor_value + added_height)
+
+    def finish_history_position(self):
+        self.keep_history_position()
+        try:
+            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
+                self.keep_history_position
+            )
+        except (TypeError, RuntimeError):
+            pass
 
     def keep_opening_at_bottom(self, _minimum, maximum):
         self.chat_scroll.verticalScrollBar().setValue(maximum)
@@ -1183,15 +1752,20 @@ class ChatPanel(QFrame):
     def set_task_state(self, state):
         self.composer.set_task_state(state)
 
-    def update_processing_jobs(self, processing_jobs, job_progress):
+    def update_processing_jobs(self, processing_jobs, job_progress, job_started_at=None):
         while self.processing_layout.count():
             item = self.processing_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
         for job in processing_jobs:
+            job_id = job.get("id")
             self.processing_layout.addWidget(
-                JobProgressBubble(job, job_progress.get(job.get("id")))
+                JobProgressBubble(
+                    job,
+                    job_progress.get(job_id),
+                    (job_started_at or {}).get(str(job_id)),
+                )
             )
         self.processing_container.setVisible(bool(processing_jobs))
         if self.empty_state is not None:
@@ -1239,8 +1813,16 @@ class ConnectionLogDialog(QDialog):
 class SettingsPanel(QFrame):
     saved = pyqtSignal(str, int, bool)
     connection_log_requested = pyqtSignal()
+    learning_mode_changed = pyqtSignal(bool)
 
-    def __init__(self, agent_ip="", server_port=8767, agent_is_local=False, parent=None):
+    def __init__(
+        self,
+        agent_ip="",
+        server_port=8767,
+        agent_is_local=False,
+        learning_mode=False,
+        parent=None,
+    ):
         super().__init__(parent)
         self.setObjectName("settingsPanel")
         layout = QVBoxLayout(self)
@@ -1255,13 +1837,31 @@ class SettingsPanel(QFrame):
         layout.addWidget(subtitle)
         layout.addSpacing(18)
 
+        learning_title = QLabel("Learning mode")
+        learning_title.setObjectName("settingsSectionTitle")
+        learning_description = QLabel(
+            "Teach Swarif your company's preferences, procedures, and workflows."
+        )
+        learning_description.setObjectName("settingsHelp")
+        learning_description.setWordWrap(True)
+        self.learning_toggle = ToggleSwitch("Learning mode")
+        self.learning_toggle.setObjectName("learningToggle")
+        self.learning_toggle.setChecked(bool(learning_mode))
+        self.learning_toggle.toggled.connect(self.learning_mode_changed)
+        layout.addWidget(learning_title)
+        layout.addWidget(learning_description)
+        layout.addWidget(self.learning_toggle)
+        layout.addSpacing(18)
+
         label = QLabel("Agent IP address")
         label.setObjectName("fieldLabel")
         self.agent_ip = QLineEdit(agent_ip)
         self.agent_ip.setObjectName("settingsInput")
+        self.agent_ip.setFixedHeight(43)
         self.agent_ip.setPlaceholderText("e.g. 192.168.1.50")
         self.agent_ip.returnPressed.connect(self.save)
-        self.local_agent = QCheckBox("Use localhost")
+        self._remote_agent_ip = "" if agent_is_local else agent_ip
+        self.local_agent = ToggleSwitch("Use localhost")
         self.local_agent.setObjectName("settingsCheckbox")
         self.local_agent.setChecked(bool(agent_is_local))
         self.local_agent.toggled.connect(self.set_local_agent)
@@ -1269,6 +1869,7 @@ class SettingsPanel(QFrame):
         port_label.setObjectName("fieldLabel")
         self.server_port = QLineEdit(str(server_port or 8767))
         self.server_port.setObjectName("settingsInput")
+        self.server_port.setFixedHeight(43)
         self.server_port.setPlaceholderText("8767")
         self.server_port.returnPressed.connect(self.save)
         help_text = QLabel("The local agent connection defaults to TCP port 8767")
@@ -1348,10 +1949,17 @@ class SettingsPanel(QFrame):
         self.saved.emit(value, port, is_local)
 
     def set_local_agent(self, is_local):
-        self.agent_ip.setDisabled(bool(is_local))
         if is_local:
+            current_value = self.agent_ip.text().strip()
+            if current_value and current_value != "127.0.0.1":
+                self._remote_agent_ip = current_value
+            self.agent_ip.setText("127.0.0.1")
+            self.agent_ip.setDisabled(True)
             self.agent_ip.setPlaceholderText("127.0.0.1")
         else:
+            self.agent_ip.setDisabled(False)
+            if self.agent_ip.text().strip() == "127.0.0.1":
+                self.agent_ip.setText(self._remote_agent_ip)
             self.agent_ip.setPlaceholderText("e.g. 192.168.1.50")
 
     def show_saved(self):
@@ -1366,17 +1974,67 @@ class SettingsPanel(QFrame):
         self.local_llm_feedback.show()
 
 
+class LoadingOverlay(QFrame):
+    """Animated, input-blocking overlay shown while a section is loading."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("loadingOverlay")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        layout = QVBoxLayout(self)
+        layout.setAlignment(Qt.AlignCenter)
+        card = QFrame()
+        card.setObjectName("loadingCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(24, 18, 24, 18)
+        card_layout.setSpacing(10)
+        self.spinner = QLabel()
+        self.spinner.setAlignment(Qt.AlignCenter)
+        self.spinner.setFixedSize(30, 30)
+        self.label = QLabel("Loading…")
+        self.label.setObjectName("loadingLabel")
+        self.label.setAlignment(Qt.AlignCenter)
+        card_layout.addWidget(self.spinner, 0, Qt.AlignCenter)
+        card_layout.addWidget(self.label)
+        layout.addWidget(card, 0, Qt.AlignCenter)
+        self._angle = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(70)
+        self._timer.timeout.connect(self.advance)
+
+    def start(self, message):
+        self.label.setText(message)
+        self._angle = 0
+        self.advance()
+        self.show()
+        self.raise_()
+        self._timer.start()
+
+    def stop(self):
+        self._timer.stop()
+        self.hide()
+
+    def advance(self):
+        self._angle = (self._angle + 30) % 360
+        pixmap = qta.icon("fa5s.spinner", color=BLUE).pixmap(QSize(24, 24))
+        self.spinner.setPixmap(
+            pixmap.transformed(QTransform().rotate(self._angle), Qt.SmoothTransformation)
+        )
+
+
 class SwarifWindow(QWidget):
     message_submitted = pyqtSignal(str)
     stop_requested = pyqtSignal()
     server_connection_changed = pyqtSignal()
     learning_mode_changed = pyqtSignal(bool)
+    section_data_loaded = pyqtSignal(int, str, object)
 
     def __init__(self):
         super().__init__()
         self._server_connected = False
         self.sidebar = None
         self._job_progress = {}
+        self._job_processing_started = {}
         self._active_jobs = []
         self._connection_log = []
         self._connection_log_size = 0
@@ -1385,13 +2043,19 @@ class SwarifWindow(QWidget):
         self._agent_typing_summary = "Thinking"
         self._task_state = "idle"
         self._learning_mode = False
+        self._chat_history_limit = 20
+        self._chat_has_more = False
+        self._tcp_processing_job_ids = set()
+        self._section_request_id = 0
         self._initial_position_pending = True
         self._inactive_jobs = []
         self.jobs_panel = None
+        self.files_panel = None
         self._compact = False
         self._expanded_size = QSize(760, 700)
         self._expanded_position = None
         self.setWindowTitle("Swarif")
+        self.setWindowIcon(QIcon(str(static_asset("Swarif_Logo.ico"))))
         self.setObjectName("swarifWindow")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -1404,6 +2068,7 @@ class SwarifWindow(QWidget):
 
         card = QFrame()
         card.setObjectName("windowCard")
+        self.window_card = card
         shadow = QGraphicsDropShadowEffect(self)
         shadow.setBlurRadius(34)
         shadow.setOffset(0, 9)
@@ -1422,6 +2087,9 @@ class SwarifWindow(QWidget):
         root.addWidget(card)
 
         self.setStyleSheet(STYLESHEET)
+        self.loading_overlay = LoadingOverlay(self)
+        self.loading_overlay.hide()
+        self.section_data_loaded.connect(self.finish_section_loading)
         startup_session = Agent.read_session()
         if startup_session and startup_session.get("remember_me") is True:
             self.show_home()
@@ -1479,6 +2147,7 @@ class SwarifWindow(QWidget):
             QTimer.singleShot(0, lambda: self.move(restored_position))
 
     def show_login(self):
+        self.cancel_section_loading()
         login = LoginPage()
         login.login_requested.connect(self.attempt_login)
         self.set_page(login)
@@ -1499,20 +2168,85 @@ class SwarifWindow(QWidget):
         self.server_connection_changed.emit()
         self.show_home()
 
+    def begin_section_loading(self, message):
+        self._section_request_id += 1
+        self.position_loading_overlay()
+        self.loading_overlay.start(message)
+        return self._section_request_id
+
+    def position_loading_overlay(self):
+        card_rect = self.window_card.geometry()
+        top = card_rect.top() + self.title_bar.height()
+        left = card_rect.left()
+        width = card_rect.width()
+        if (
+            self.current_page is not None
+            and self.current_page.objectName() in {"homePage", "jobsPage", "settingsPage"}
+        ):
+            left += 190
+            width -= 190
+        self.loading_overlay.setGeometry(
+            left,
+            top,
+            max(0, width),
+            max(0, card_rect.bottom() - top + 1),
+        )
+
+    def cancel_section_loading(self):
+        self._section_request_id += 1
+        self.loading_overlay.stop()
+
+    def finish_section_loading(self, request_id, section, payload):
+        if request_id != self._section_request_id:
+            return
+        if section == "home":
+            self.render_home(payload["session"], payload["messages"])
+        elif section == "jobs":
+            self.render_jobs(
+                payload["session"],
+                payload["active_jobs"],
+                payload["inactive_jobs"],
+            )
+        self.loading_overlay.stop()
+
     def show_home(self):
         session = Agent.read_session()
         if not session:
             self.show_login()
             return
 
-        if not isinstance(session.get("name"), str) or not session["name"].strip():
+        request_id = self.begin_section_loading("Loading chat…")
+
+        def worker():
+            loaded_session = session
+            if not isinstance(loaded_session.get("name"), str) or not loaded_session["name"].strip():
+                try:
+                    refreshed_session = Agent.refresh_session_user()
+                    if refreshed_session:
+                        loaded_session = refreshed_session
+                except (RuntimeError, ConnectionError) as error:
+                    log(error)
             try:
-                refreshed_session = Agent.refresh_session_user()
-                if refreshed_session:
-                    session = refreshed_session
-            except (RuntimeError, ConnectionError) as error:
+                chat_messages = Agent.sync_chat_from_database(
+                    limit=self._chat_history_limit
+                )
+            except (ValueError, RuntimeError, ConnectionError) as error:
                 log(error)
-                pass
+                try:
+                    chat_messages = Agent.read_local_chat()
+                except RuntimeError as local_error:
+                    log(local_error)
+                    chat_messages = []
+            self.section_data_loaded.emit(
+                request_id,
+                "home",
+                {"session": loaded_session, "messages": chat_messages or []},
+            )
+
+        threading.Thread(target=worker, name="swarif-load-chat", daemon=True).start()
+
+    def render_home(self, session, chat_messages):
+        self._chat_has_more = len(chat_messages) >= self._chat_history_limit
 
         body = QFrame()
         body.setObjectName("homePage")
@@ -1527,15 +2261,6 @@ class SwarifWindow(QWidget):
         sidebar.jobs_clicked.connect(self.show_jobs)
         sidebar.files_clicked.connect(self.open_files)
         sidebar.settings_clicked.connect(self.show_settings)
-        try:
-            chat_messages = Agent.sync_chat_from_database()
-        except (ValueError, RuntimeError, ConnectionError) as error:
-            log(error)
-            try:
-                chat_messages = Agent.read_local_chat()
-            except RuntimeError as local_error:
-                log(local_error)
-                chat_messages = []
         body_layout.addWidget(sidebar)
         self.home_layout = body_layout
         self.chat_panel = ChatPanel(
@@ -1543,15 +2268,17 @@ class SwarifWindow(QWidget):
             newest_first=False,
             processing_jobs=self.processing_jobs(),
             job_progress=self._job_progress,
+            job_started_at=self._job_processing_started,
             agent_typing=self._agent_typing,
             agent_typing_summary=self._agent_typing_summary,
             learning_mode=self._learning_mode,
             scroll_to_bottom_on_show=True,
+            has_more_messages=self._chat_has_more,
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
         self.chat_panel.stop_requested.connect(self.stop_requested)
-        self.chat_panel.learning_mode_changed.connect(self.set_learning_mode)
-        self.chat_panel.set_task_state(self._task_state)
+        self.chat_panel.load_more_requested.connect(self.load_more_chat)
+        self.chat_panel.set_task_state(self.effective_composer_state())
         body_layout.addWidget(self.chat_panel, 1)
         self.set_page(body)
 
@@ -1561,16 +2288,33 @@ class SwarifWindow(QWidget):
             self.show_login()
             return
 
-        try:
-            active_jobs = Agent.fetch_jobs("active")
-        except (ValueError, RuntimeError, ConnectionError) as error:
-            log(error)
-            active_jobs = []
-        try:
-            inactive_jobs = Agent.fetch_jobs("inactive")
-        except (ValueError, RuntimeError, ConnectionError) as error:
-            log(error)
-            inactive_jobs = []
+        request_id = self.begin_section_loading("Loading jobs…")
+
+        def worker():
+            try:
+                active_jobs = Agent.fetch_jobs("active")
+            except (ValueError, RuntimeError, ConnectionError) as error:
+                log(error)
+                active_jobs = []
+            try:
+                inactive_jobs = Agent.fetch_jobs("inactive")
+            except (ValueError, RuntimeError, ConnectionError) as error:
+                log(error)
+                inactive_jobs = []
+            self.section_data_loaded.emit(
+                request_id,
+                "jobs",
+                {
+                    "session": session,
+                    "active_jobs": active_jobs,
+                    "inactive_jobs": inactive_jobs,
+                },
+            )
+
+        threading.Thread(target=worker, name="swarif-load-jobs", daemon=True).start()
+
+    def render_jobs(self, session, active_jobs, inactive_jobs):
+
         self._active_jobs, self._inactive_jobs = partition_jobs_by_status(
             active_jobs, inactive_jobs
         )
@@ -1596,6 +2340,7 @@ class SwarifWindow(QWidget):
         self.set_page(body)
 
     def show_settings(self):
+        self.cancel_section_loading()
         session = Agent.read_session()
         if not session:
             self.show_login()
@@ -1615,11 +2360,15 @@ class SwarifWindow(QWidget):
         sidebar.files_clicked.connect(self.open_files)
         sidebar.settings_clicked.connect(self.show_settings)
         body_layout.addWidget(sidebar)
+        connection = Agent.connection_settings()
         settings = SettingsPanel(
-            session.get("agent_ip", ""),
-            session.get("server_port", 8767),
-            session.get("agent_is_local", False),
+            connection["agent_ip"],
+            connection["server_port"],
+            connection["agent_is_local"],
+            self._learning_mode,
         )
+        self.settings_panel = settings
+        settings.learning_mode_changed.connect(self.set_learning_mode)
         settings.saved.connect(
             lambda agent_ip, server_port, agent_is_local: self.save_agent_connection(
                 agent_ip, server_port, agent_is_local, settings
@@ -1668,12 +2417,10 @@ class SwarifWindow(QWidget):
 
     def save_agent_connection(self, agent_ip, server_port, agent_is_local, panel):
         try:
-            Agent.update_session(
-                {
-                    "agent_ip": agent_ip,
-                    "server_port": server_port,
-                    "agent_is_local": bool(agent_is_local),
-                }
+            Agent.save_connection_settings(
+                agent_ip,
+                server_port,
+                agent_is_local,
             )
         except (ValueError, RuntimeError, OSError) as error:
             log(error)
@@ -1697,13 +2444,27 @@ class SwarifWindow(QWidget):
                 self._agent_typing,
                 self._agent_typing_summary,
             )
+            self.refresh_composer_state()
 
     def set_task_state(self, state):
         self._task_state = state if state in {
             "idle", "thinking", "executing", "stopping"
         } else "idle"
         if self.current_page is not None and self.current_page.objectName() == "homePage":
-            self.chat_panel.set_task_state(self._task_state)
+            self.refresh_composer_state()
+
+    def effective_composer_state(self):
+        if self._task_state == "stopping":
+            return "stopping"
+        if self._agent_typing or self._task_state == "thinking":
+            return "thinking"
+        if self.processing_jobs() or self._tcp_processing_job_ids:
+            return "executing"
+        return "idle"
+
+    def refresh_composer_state(self):
+        if self.current_page is not None and self.current_page.objectName() == "homePage":
+            self.chat_panel.set_task_state(self.effective_composer_state())
 
     @property
     def learning_mode(self):
@@ -1719,13 +2480,16 @@ class SwarifWindow(QWidget):
             widget.style().polish(widget)
         if self.current_page is not None and self.current_page.objectName() == "homePage":
             self.chat_panel.learning_banner.setVisible(self._learning_mode)
-            if self.chat_panel.learning_toggle.isChecked() != self._learning_mode:
-                self.chat_panel.learning_toggle.setChecked(self._learning_mode)
+        if self.current_page is not None and self.current_page.objectName() == "settingsPage":
+            if self.settings_panel.learning_toggle.isChecked() != self._learning_mode:
+                self.settings_panel.learning_toggle.setChecked(self._learning_mode)
         self.learning_mode_changed.emit(self._learning_mode)
 
     def update_job_progress(self, job_id, current_progress):
         """Keep and display the newest TCP progress value for a job."""
         self._job_progress[job_id] = current_progress
+        if job_id is not None:
+            self._tcp_processing_job_ids.add(str(job_id))
         if (
             self.current_page is not None
             and self.current_page.objectName() == "jobsPage"
@@ -1734,12 +2498,23 @@ class SwarifWindow(QWidget):
             self.jobs_panel.update_job_progress(job_id, current_progress)
         if self.current_page is not None and self.current_page.objectName() == "homePage":
             self.chat_panel.update_processing_jobs(
-                self.processing_jobs(), self._job_progress
+                self.processing_jobs(),
+                self._job_progress,
+                self._job_processing_started,
             )
+            self.refresh_composer_state()
 
     def update_jobs(self, active_jobs, inactive_jobs):
         """Update both status-based job collections from the global poller."""
         self._inactive_jobs = inactive_jobs or []
+        terminal_ids = {
+            str(job.get("id"))
+            for job in self._inactive_jobs
+            if isinstance(job, dict) and job.get("id") is not None
+        }
+        self._tcp_processing_job_ids.difference_update(terminal_ids)
+        for job_id in terminal_ids:
+            self._job_processing_started.pop(job_id, None)
         self.update_active_jobs(active_jobs)
         if (
             self.current_page is not None
@@ -1749,7 +2524,13 @@ class SwarifWindow(QWidget):
             self.jobs_panel.update_inactive_jobs(self._inactive_jobs)
 
     def processing_jobs(self):
-        return [job for job in self._active_jobs if job_is_processing(job)]
+        jobs = [job for job in self._active_jobs if job_is_processing(job)]
+        now = datetime.now()
+        for job in jobs:
+            job_id = job.get("id")
+            if job_id is not None:
+                self._job_processing_started.setdefault(str(job_id), now)
+        return jobs
 
     def update_active_jobs(self, active_jobs):
         """Apply the latest five-second job snapshot on the UI thread."""
@@ -1762,60 +2543,69 @@ class SwarifWindow(QWidget):
             self.jobs_panel.update_active_jobs(self._active_jobs)
         if self.current_page is not None and self.current_page.objectName() == "homePage":
             self.chat_panel.update_processing_jobs(
-                self.processing_jobs(), self._job_progress
+                self.processing_jobs(),
+                self._job_progress,
+                self._job_processing_started,
             )
+            self.refresh_composer_state()
 
     def open_files(self):
         session = Agent.read_session()
         if not session:
             self.show_login()
             return
-
-        agent_ip = session.get("agent_ip")
-        user_id = session.get("user_id") or session.get("id")
-        agent_is_local = session.get("agent_is_local") is True
-        if not isinstance(agent_ip, str) or not agent_ip.strip():
-            QMessageBox.warning(
-                self,
-                "Remote server not connected",
-                "You need to connect with the remote server first. Add the agent IP address in Settings.",
-            )
-            return
-        if not isinstance(user_id, str) or not user_id.strip():
-            QMessageBox.warning(
-                self,
-                "Unable to open Files",
-                "The signed-in session is missing the user ID.",
-            )
-            return
-
-        system = platform.system()
-        if agent_is_local:
-            if system == "Windows":
-                folder = rf"C:\ProgramData\Swarif\Files\{user_id.strip()}"
-            elif system == "Darwin":
-                folder = os.path.join(
-                    "/Library/Application Support/Swarif/Files", user_id.strip()
-                )
-            else:
-                folder = os.path.join("/var/lib/swarif/files", user_id.strip())
-        elif system == "Windows":
-            folder = rf"\\{agent_ip.strip()}\swarif\{user_id.strip()}"
-        else:
-            folder = f"smb://{agent_ip.strip()}/swarif/{user_id.strip()}"
-
         try:
-            if system == "Darwin":
-                subprocess.Popen(["open", folder])
-            elif system == "Windows":
-                subprocess.Popen(["explorer.exe", folder])
-            else:
-                subprocess.Popen(["xdg-open", folder])
-        except OSError as error:
+            root_path = Agent.user_files_path()
+        except (KeyError, RuntimeError) as error:
             log(error)
-            QMessageBox.warning(self, "Unable to open Files", str(error))
+            QMessageBox.warning(self, "Unable to show Files", str(error))
+            return
 
-    def update_chat_messages(self, chat_messages):
+        body = QFrame()
+        body.setObjectName("filesPage")
+        body_layout = QHBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(0)
+        fallback_name = session.get("email", "Swarif").split("@", 1)[0].title()
+        sidebar = Sidebar(
+            user_name=session.get("name") or fallback_name,
+            active_page="files",
+            connected=self._server_connected,
+        )
+        self.sidebar = sidebar
+        sidebar.logout_clicked.connect(self.logout)
+        sidebar.chat_clicked.connect(self.show_home)
+        sidebar.jobs_clicked.connect(self.show_jobs)
+        sidebar.files_clicked.connect(self.open_files)
+        sidebar.settings_clicked.connect(self.show_settings)
+        body_layout.addWidget(sidebar)
+        self.files_panel = FilesPanel(root_path)
+        body_layout.addWidget(self.files_panel, 1)
+        self.set_page(body)
+
+    @property
+    def chat_history_limit(self):
+        return self._chat_history_limit
+
+    def load_more_chat(self):
+        if self.current_page is None or self.current_page.objectName() != "homePage":
+            return
+        scrollbar = self.chat_panel.chat_scroll.verticalScrollBar()
+        anchor = (scrollbar.value(), scrollbar.maximum())
+        next_limit = self._chat_history_limit + 30
+        try:
+            messages = Agent.sync_chat_from_database(limit=next_limit)
+            if messages is False:
+                raise RuntimeError("No active chat session")
+        except (ValueError, RuntimeError, ConnectionError) as error:
+            log(error)
+            self.chat_panel.show_load_more_error()
+            return
+        self._chat_history_limit = next_limit
+        self._chat_has_more = len(messages) >= next_limit
+        self.update_chat_messages(messages, history_scroll_anchor=anchor)
+
+    def update_chat_messages(self, chat_messages, history_scroll_anchor=None):
         if self.current_page is None or self.current_page.objectName() != "homePage":
             return
         old_panel = self.chat_panel
@@ -1831,17 +2621,28 @@ class SwarifWindow(QWidget):
             newest_first=False,
             processing_jobs=self.processing_jobs(),
             job_progress=self._job_progress,
+            job_started_at=self._job_processing_started,
             agent_typing=self._agent_typing,
             agent_typing_summary=self._agent_typing_summary,
             learning_mode=self._learning_mode,
             scroll_to_bottom_on_show=continue_initial_scroll,
-            initial_scroll_value=None if continue_initial_scroll else scroll_value,
-            preserve_bottom_on_refresh=(not continue_initial_scroll and was_at_bottom),
+            initial_scroll_value=(
+                None
+                if continue_initial_scroll or history_scroll_anchor is not None
+                else scroll_value
+            ),
+            preserve_bottom_on_refresh=(
+                history_scroll_anchor is None
+                and not continue_initial_scroll
+                and was_at_bottom
+            ),
+            has_more_messages=self._chat_has_more,
+            history_scroll_anchor=history_scroll_anchor,
         )
         self.chat_panel.message_submitted.connect(self.message_submitted)
         self.chat_panel.stop_requested.connect(self.stop_requested)
-        self.chat_panel.learning_mode_changed.connect(self.set_learning_mode)
-        self.chat_panel.set_task_state(self._task_state)
+        self.chat_panel.load_more_requested.connect(self.load_more_chat)
+        self.chat_panel.set_task_state(self.effective_composer_state())
         self.home_layout.addWidget(self.chat_panel, 1)
 
     def logout(self):
@@ -1854,6 +2655,11 @@ class SwarifWindow(QWidget):
         if self._initial_position_pending:
             self._initial_position_pending = False
             QTimer.singleShot(0, self.position_initially_bottom_right)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "loading_overlay"):
+            self.position_loading_overlay()
 
     def position_initially_bottom_right(self):
         """Place the first window show at bottom-right without anchoring it."""
@@ -1893,6 +2699,80 @@ STYLESHEET = f"""
     font-family: "Helvetica Neue";
     color: {DARK};
 }}
+QMenu {{
+    background: white;
+    color: {DARK};
+    border: 1px solid #D7E3F1;
+    border-radius: 9px;
+    padding: 6px;
+}}
+QMenu::item {{
+    background: transparent;
+    color: {DARK};
+    border-radius: 6px;
+    padding: 7px 28px 7px 10px;
+}}
+QMenu::item:selected {{
+    background: #EAF3FF;
+    color: {BLUE};
+}}
+QMenu::item:disabled {{ color: #A1ADBC; }}
+QMenu::separator {{
+    background: #E1E9F2;
+    height: 1px;
+    margin: 5px 7px;
+}}
+QDialog, QMessageBox, QInputDialog, QFileDialog {{
+    background: white;
+    color: {DARK};
+}}
+QDialog QLabel, QMessageBox QLabel, QInputDialog QLabel, QFileDialog QLabel {{
+    background: transparent;
+    color: {DARK};
+}}
+QDialog QLineEdit, QInputDialog QLineEdit, QFileDialog QLineEdit {{
+    background: white;
+    color: {DARK};
+    border: 1px solid #C8D8EA;
+    border-radius: 7px;
+    padding: 6px 9px;
+    selection-background-color: #DCEBFD;
+    selection-color: {DARK};
+}}
+QDialog QPushButton, QMessageBox QPushButton, QInputDialog QPushButton, QFileDialog QPushButton {{
+    background: white;
+    color: {DARK};
+    border: 1px solid #C8D8EA;
+    border-radius: 8px;
+    min-height: 30px;
+    padding: 0 12px;
+}}
+QDialog QPushButton:hover, QMessageBox QPushButton:hover,
+QInputDialog QPushButton:hover, QFileDialog QPushButton:hover {{
+    background: #EAF3FF;
+    color: {BLUE};
+    border-color: #AFC9E8;
+}}
+QFileDialog QTreeView, QFileDialog QListView, QFileDialog QComboBox {{
+    background: white;
+    color: {DARK};
+    border: 1px solid #D7E3F1;
+    selection-background-color: #DCEBFD;
+    selection-color: {DARK};
+}}
+QComboBox QAbstractItemView {{
+    background: white;
+    color: {DARK};
+    border: 1px solid #D7E3F1;
+    selection-background-color: #DCEBFD;
+    selection-color: {DARK};
+}}
+QToolTip {{
+    background: white;
+    color: {DARK};
+    border: 1px solid #C8D8EA;
+    padding: 5px;
+}}
 #windowCard {{
     background: #F9FBFE;
     border: 1px solid #D7E3F1;
@@ -1910,7 +2790,18 @@ STYLESHEET = f"""
     font-size: 24px; width: 30px; height: 30px; border-radius: 15px;
 }}
 #windowButton:hover {{ background: #E9F1FB; color: #17243A; }}
-#sidebar {{ background: #F7FAFE; border-right: 1px solid {BORDER}; }}
+#loadingOverlay {{
+    background: rgba(21, 35, 58, 72); border: none;
+    border-bottom-right-radius: 23px;
+}}
+#loadingCard {{
+    background: white; border: 1px solid {BORDER}; border-radius: 16px;
+}}
+#loadingLabel {{ color: #40516A; font-size: 12px; font-weight: 650; }}
+#sidebar {{
+    background: #F7FAFE; border-right: 1px solid {BORDER};
+    border-bottom-left-radius: 23px;
+}}
 #navButton, #navActive {{
     border: none; border-radius: 11px; padding: 0 13px;
     text-align: left; font-size: 14px; font-weight: 500;
@@ -1923,14 +2814,18 @@ STYLESHEET = f"""
     padding: 0 13px; text-align: left; font-size: 14px; font-weight: 500;
 }}
 #logoutButton:hover {{ background: #FFF0F1; color: #D84B57; }}
+#settingsIconButton, #settingsIconActive {{
+    border: none; border-radius: 11px; padding: 0;
+}}
+#settingsIconButton {{ background: transparent; }}
+#settingsIconButton:hover {{ background: #EDF4FD; }}
+#settingsIconActive {{ background: {BLUE}; }}
 #profile {{ background: #EEF5FE; border-radius: 13px; }}
 #profileName {{ font-size: 13px; font-weight: 650; }}
 #status, #online {{ color: #20A05A; font-size: 10px; }}
 #status[connected="false"] {{ color: #D44D59; }}
 #chatPanel, #conversation {{ background: white; }}
-#chatHeader {{ background: white; border-bottom: 1px solid {BORDER}; }}
-#assistantTitle {{ font-size: 16px; font-weight: 700; }}
-#assistantSubtitle {{ color: {MUTED}; font-size: 12px; }}
+#chatPanel {{ border-bottom-right-radius: 23px; }}
 #learningToggle {{
     color: #526176; font-size: 11px; font-weight: 650; spacing: 7px;
 }}
@@ -1945,6 +2840,18 @@ STYLESHEET = f"""
     background: #DDF8EA; color: #12633F; border-bottom: 1px solid #A9E2C6;
     padding: 9px 14px; font-size: 11px; font-weight: 700;
 }}
+#loadMoreButton {{
+    background: #EDF4FD; color: {BLUE}; border: 1px solid #CFE1F7;
+    border-radius: 14px; padding: 6px 14px; font-size: 11px; font-weight: 650;
+    margin-bottom: 8px;
+}}
+#loadMoreButton:hover {{ background: #DDECFD; }}
+#loadMoreButton:disabled {{ color: #8796A9; background: #F3F6F9; }}
+#jumpToBottomButton {{
+    background: white; border: 1px solid #C8D8EA; border-radius: 17px;
+    padding: 0;
+}}
+#jumpToBottomButton:hover {{ background: #EDF4FD; border-color: #AFC9E8; }}
 #chatScroll {{ border: none; background: white; }}
 #bubbleIncoming, #bubbleOutgoing {{
     border: none; border-radius: 16px; padding: 11px 14px;
@@ -1980,7 +2887,11 @@ STYLESHEET = f"""
 #stopStatus {{
     color: {MUTED}; font-size: 9px; font-weight: 600;
 }}
-#loginPage {{ background: #F7FAFE; }}
+#loginPage {{
+    background: #F7FAFE;
+    border-bottom-left-radius: 23px;
+    border-bottom-right-radius: 23px;
+}}
 #loginCard {{
     background: white; border: 1px solid #D9E5F2; border-radius: 22px;
 }}
@@ -2008,7 +2919,42 @@ STYLESHEET = f"""
     border-radius: 8px; padding: 7px; font-size: 10px;
 }}
 #secureLabel {{ color: #38A66B; font-size: 10px; }}
-#jobsPanel, #jobsPage, #jobListContent, #settingsPanel, #settingsPage {{ background: white; }}
+#jobsPanel, #jobsPage, #jobListContent, #filesPanel, #filesPage, #settingsPanel, #settingsPage {{ background: white; }}
+#jobsPage, #filesPage, #settingsPage {{
+    border-bottom-left-radius: 23px;
+    border-bottom-right-radius: 23px;
+}}
+#jobsPanel, #filesPanel, #settingsPanel {{ border-bottom-right-radius: 23px; }}
+#filesPrimary, #filesSecondary {{
+    min-height: 38px; border-radius: 10px; padding: 0 13px;
+    font-size: 12px; font-weight: 650;
+}}
+#filesPrimary {{ background: {BLUE}; color: white; border: none; }}
+#filesPrimary:hover {{ background: #1768D5; }}
+#filesSecondary {{ background: white; color: {BLUE}; border: 1px solid #C8D8EA; }}
+#filesSecondary:hover {{ background: {PALE_BLUE}; border-color: #AFC9E8; }}
+#filesBack {{
+    background: transparent; border: none; border-radius: 9px;
+    width: 34px; height: 34px;
+}}
+#filesBack:hover {{ background: #EDF4FD; }}
+#filesBack:disabled {{ background: transparent; }}
+#filesLocation {{
+    background: #F8FAFD; border: 1px solid #D8E3F0; border-radius: 9px;
+    color: #526176; padding: 7px 11px; font-size: 11px;
+}}
+#fileTree {{
+    background: white; alternate-background-color: #F8FAFD;
+    border: 1px solid #D8E3F0; border-radius: 11px;
+    font-size: 11px; outline: none;
+}}
+#fileTree::item {{ min-height: 34px; padding: 3px; }}
+#fileTree::item:selected {{ background: #DCEBFD; color: {DARK}; }}
+#fileTree QHeaderView::section {{
+    background: #F3F7FC; color: #60728A; border: none;
+    border-bottom: 1px solid #D8E3F0; padding: 8px; font-size: 10px; font-weight: 650;
+}}
+#filesHint {{ color: #8796A9; font-size: 10px; padding: 4px; }}
 #sectionTitle {{ font-size: 22px; font-weight: 700; color: {DARK}; }}
 #sectionSubtitle {{ color: {MUTED}; font-size: 12px; }}
 #jobTab, #jobTabActive {{
@@ -2052,6 +2998,7 @@ STYLESHEET = f"""
     background: #F2F7FD; border: 1px solid #D8E7F7; border-radius: 14px;
 }}
 #jobProgressTitle {{ color: #8190A5; font-size: 11px; font-weight: 600; }}
+#jobWorkedFor {{ color: #60728A; font-size: 10px; font-weight: 650; }}
 #jobProgressLabel {{ color: #60728A; font-size: 10px; font-weight: 700; }}
 #jobProgressText {{
     background: #E5F0FC; color: #405B7B; border-radius: 10px;
@@ -2089,16 +3036,18 @@ STYLESHEET = f"""
 }}
 #swarifWindow[learningMode="true"] #chatPanel,
 #swarifWindow[learningMode="true"] #conversation,
-#swarifWindow[learningMode="true"] #chatHeader,
 #swarifWindow[learningMode="true"] #chatScroll,
 #swarifWindow[learningMode="true"] #homePage,
 #swarifWindow[learningMode="true"] #jobsPanel,
 #swarifWindow[learningMode="true"] #jobsPage,
+#swarifWindow[learningMode="true"] #filesPanel,
+#swarifWindow[learningMode="true"] #filesPage,
 #swarifWindow[learningMode="true"] #settingsPanel,
 #swarifWindow[learningMode="true"] #settingsPage {{
     background: rgba(242, 253, 247, 225); border-color: #B8E5CE;
 }}
 #swarifWindow[learningMode="true"] #navActive,
+#swarifWindow[learningMode="true"] #settingsIconActive,
 #swarifWindow[learningMode="true"] #sendButton,
 #swarifWindow[learningMode="true"] #settingsSave {{ background: #249B69; }}
 #swarifWindow[learningMode="true"] #brand,
@@ -2112,8 +3061,179 @@ STYLESHEET = f"""
 #swarifWindow[compact="true"] #titleBar {{
     background: white; border: none; border-radius: 34px;
 }}
+
+/* Deep-blue application theme. Popups intentionally remain light. */
+#swarifWindow #windowCard {{ background: #07182F; border-color: #284B73; }}
+#swarifWindow #titleBar {{ background: #0C2344; border-bottom-color: #284B73; }}
+#swarifWindow #brand {{ color: #F3F7FC; }}
+#swarifWindow #windowButton {{ color: #C5D5E7; }}
+#swarifWindow #windowButton:hover {{ background: #193B65; color: white; }}
+#swarifWindow #sidebar {{ background: #0A1F3B; border-right-color: #284B73; }}
+#swarifWindow #navButton, #swarifWindow #logoutButton {{ color: #C5D5E7; }}
+#swarifWindow #navButton:hover, #swarifWindow #settingsIconButton:hover {{ background: #17375F; color: white; }}
+#swarifWindow #navActive, #swarifWindow #settingsIconActive {{ background: #2478EB; color: white; }}
+#swarifWindow #logoutButton:hover {{ background: #4A2338; color: #FFABB5; }}
+#swarifWindow #profile {{ background: #132F53; }}
+#swarifWindow #profileName {{ color: #F3F7FC; }}
+
+#swarifWindow #loginPage, #swarifWindow #homePage,
+#swarifWindow #jobsPage, #swarifWindow #filesPage, #swarifWindow #settingsPage,
+#swarifWindow #chatPanel, #swarifWindow #conversation,
+#swarifWindow #jobsPanel, #swarifWindow #jobListContent,
+#swarifWindow #filesPanel, #swarifWindow #settingsPanel {{ background: #0C2344; }}
+#swarifWindow #loginCard {{ background: #102B50; border-color: #31577F; }}
+#swarifWindow #loginTitle, #swarifWindow #sectionTitle,
+#swarifWindow #settingsSectionTitle, #swarifWindow #fieldLabel,
+#swarifWindow #assistantTitle, #swarifWindow #jobDetailTitle {{ color: #F3F7FC; }}
+#swarifWindow #loginSubtitle, #swarifWindow #sectionSubtitle,
+#swarifWindow #settingsHelp, #swarifWindow #timestamp,
+#swarifWindow #typingSummary, #swarifWindow #stopStatus,
+#swarifWindow #jobMeta, #swarifWindow #jobDetailId,
+#swarifWindow #filesHint {{ color: #A9BCD2; }}
+
+#swarifWindow #loginInput, #swarifWindow #settingsInput,
+#swarifWindow #filesLocation, #swarifWindow #jobField {{
+    background: #102B50; color: #F3F7FC; border-color: #31577F;
+}}
+#swarifWindow #loginInput:focus, #swarifWindow #settingsInput:focus {{
+    background: #132F53; border-color: #5598F5;
+}}
+#swarifWindow #rememberCheck, #swarifWindow #learningToggle {{ color: #C5D5E7; }}
+#swarifWindow #textButton, #swarifWindow #filesLocation {{ color: #77ACFA; }}
+
+#swarifWindow #chatScroll, #swarifWindow #jobListScroll,
+#swarifWindow #jobDetailScroll {{ background: #0C2344; border-color: #284B73; }}
+#swarifWindow #composer {{ background: #102B50; border-color: #31577F; }}
+#swarifWindow #messageInput {{ background: transparent; color: #F3F7FC; }}
+#swarifWindow #bubbleIncoming, #swarifWindow #typingBubble {{ background: #17375F; color: #F3F7FC; }}
+#swarifWindow #bubbleOutgoing {{ background: #2478EB; color: white; }}
+#swarifWindow #loadMoreButton, #swarifWindow #jumpToBottomButton {{
+    background: #15365F; color: #8DBBFF; border-color: #31577F;
+}}
+#swarifWindow #loadMoreButton:hover, #swarifWindow #jumpToBottomButton:hover {{ background: #1B4778; }}
+#swarifWindow #emptyTitle {{ color: #DCE8F5; }}
+#swarifWindow #emptyText {{ color: #8FA7C1; }}
+
+#swarifWindow #fileTree {{
+    background: #0F294B; alternate-background-color: #122F54;
+    color: #E8F0F8; border-color: #31577F;
+}}
+#swarifWindow #fileTree::item:selected {{ background: #22558D; color: white; }}
+#swarifWindow #fileTree QHeaderView::section {{
+    background: #102B50; color: #B8C9DC; border-bottom-color: #31577F;
+}}
+#swarifWindow #filesSecondary, #swarifWindow #settingsSecondary {{
+    background: #102B50; color: #77ACFA; border-color: #3C6795;
+}}
+#swarifWindow #filesSecondary:hover, #swarifWindow #settingsSecondary:hover {{ background: #17375F; }}
+#swarifWindow #filesBack:hover {{ background: #17375F; }}
+
+#swarifWindow #jobRow {{ background: #102B50; border-color: #294E76; }}
+#swarifWindow #jobRow:hover {{ background: #15365F; border-color: #477DB2; }}
+#swarifWindow #jobTitle, #swarifWindow #jobFieldValue {{ color: #EAF1F8; }}
+#swarifWindow #jobFieldName {{ color: #9CB2C9; }}
+#swarifWindow #jobProgressCard {{ background: #102B50; border-color: #31577F; }}
+#swarifWindow #jobProgressText {{ background: #17375F; color: #DCE8F5; }}
+#swarifWindow #jobProgressTitle, #swarifWindow #jobProgressLabel,
+#swarifWindow #jobWorkedFor {{ color: #A9BCD2; }}
+#swarifWindow #jobTab {{ background: #15365F; color: #AFC3D8; }}
+#swarifWindow #jobTab:hover {{ background: #1B4778; color: white; }}
+
+#swarifWindow[compact="true"] #windowCard,
+#swarifWindow[compact="true"] #titleBar {{ background: #0C2344; border-color: #31577F; }}
+
+/* Predominantly white brand theme with deep-blue navigation. */
+#swarifWindow #windowCard {{ background: white; border-color: #C9D9EA; }}
+#swarifWindow #titleBar {{ background: #0C2344; border-bottom-color: #27496E; }}
+#swarifWindow #sidebar {{ background: #0C2344; border-right-color: #27496E; }}
+#swarifWindow #profile {{ background: #17375F; }}
+
+#swarifWindow #loginPage, #swarifWindow #homePage,
+#swarifWindow #jobsPage, #swarifWindow #filesPage, #swarifWindow #settingsPage,
+#swarifWindow #chatPanel, #swarifWindow #conversation,
+#swarifWindow #jobsPanel, #swarifWindow #jobListContent,
+#swarifWindow #filesPanel, #swarifWindow #settingsPanel {{ background: white; }}
+#swarifWindow #loginPage {{ background: #F4F8FE; }}
+#swarifWindow #loginCard {{ background: white; border-color: #C9D9EA; }}
+#swarifWindow #loginTitle, #swarifWindow #sectionTitle,
+#swarifWindow #settingsSectionTitle, #swarifWindow #fieldLabel,
+#swarifWindow #assistantTitle, #swarifWindow #jobDetailTitle {{ color: #0C2344; }}
+#swarifWindow #loginSubtitle, #swarifWindow #sectionSubtitle,
+#swarifWindow #settingsHelp, #swarifWindow #timestamp,
+#swarifWindow #typingSummary, #swarifWindow #stopStatus,
+#swarifWindow #jobMeta, #swarifWindow #jobDetailId,
+#swarifWindow #filesHint {{ color: #6F829B; }}
+
+#swarifWindow #loginInput, #swarifWindow #settingsInput,
+#swarifWindow #filesLocation, #swarifWindow #jobField {{
+    background: #F5F9FE; color: #15233A; border-color: #C9D9EA;
+}}
+#swarifWindow #loginInput:focus, #swarifWindow #settingsInput:focus {{
+    background: white; border-color: #2478EB;
+}}
+#swarifWindow #rememberCheck, #swarifWindow #learningToggle {{ color: #526176; }}
+#swarifWindow #textButton, #swarifWindow #filesLocation {{ color: #2478EB; }}
+
+#swarifWindow #chatScroll, #swarifWindow #jobListScroll,
+#swarifWindow #jobDetailScroll {{ background: white; border-color: #D8E3F0; }}
+#swarifWindow #composer {{ background: white; border-color: #C9D9EA; }}
+#swarifWindow #messageInput {{ background: transparent; color: #15233A; }}
+#swarifWindow #bubbleIncoming, #swarifWindow #typingBubble {{ background: #EAF3FF; color: #15233A; }}
+#swarifWindow #bubbleOutgoing {{ background: #2478EB; color: white; }}
+#swarifWindow #loadMoreButton, #swarifWindow #jumpToBottomButton {{
+    background: #F1F6FD; color: #2478EB; border-color: #C9D9EA;
+}}
+#swarifWindow #loadMoreButton:hover, #swarifWindow #jumpToBottomButton:hover {{ background: #E1EDFB; }}
+#swarifWindow #emptyTitle {{ color: #405572; }}
+#swarifWindow #emptyText {{ color: #8798AC; }}
+
+#swarifWindow #fileTree {{
+    background: white; alternate-background-color: #F5F9FE;
+    color: #15233A; border-color: #C9D9EA;
+}}
+#swarifWindow #fileTree::item:selected {{ background: #DCEBFD; color: #0C2344; }}
+#swarifWindow #fileTree QHeaderView::section {{
+    background: #EAF3FF; color: #405572; border-bottom-color: #C9D9EA;
+}}
+#swarifWindow #filesSecondary, #swarifWindow #settingsSecondary {{
+    background: white; color: #2478EB; border-color: #8CB7EA;
+}}
+#swarifWindow #filesSecondary:hover, #swarifWindow #settingsSecondary:hover {{ background: #EAF3FF; }}
+#swarifWindow #filesBack:hover {{ background: #EAF3FF; }}
+
+#swarifWindow #jobRow {{ background: #F7FAFE; border-color: #D6E3F1; }}
+#swarifWindow #jobRow:hover {{ background: #EAF3FF; border-color: #AFC9E8; }}
+#swarifWindow #jobTitle, #swarifWindow #jobFieldValue {{ color: #15233A; }}
+#swarifWindow #jobFieldName {{ color: #6F829B; }}
+#swarifWindow #jobProgressCard {{ background: #F1F6FD; border-color: #D3E2F2; }}
+#swarifWindow #jobProgressText {{ background: #E3EFFC; color: #405572; }}
+#swarifWindow #jobProgressTitle, #swarifWindow #jobProgressLabel,
+#swarifWindow #jobWorkedFor {{ color: #60728A; }}
+#swarifWindow #jobTab {{ background: #EAF1F9; color: #60728A; }}
+#swarifWindow #jobTab:hover {{ background: #DCEBFD; color: #2478EB; }}
+
+#swarifWindow[compact="true"] #windowCard,
+#swarifWindow[compact="true"] #titleBar {{ background: #0C2344; border-color: #27496E; }}
+
+/* Restore the original light chrome; only the Swarif wordmark is deep blue. */
+#swarifWindow #windowCard {{ background: #F9FBFE; border-color: #D7E3F1; }}
+#swarifWindow #titleBar {{ background: #F7FAFE; border-bottom-color: {BORDER}; }}
+#swarifWindow #brand {{ color: #0C2344; }}
+#swarifWindow #windowButton {{ color: #526176; }}
+#swarifWindow #windowButton:hover {{ background: #E9F1FB; color: #17243A; }}
+#swarifWindow #sidebar {{ background: #F7FAFE; border-right-color: {BORDER}; }}
+#swarifWindow #navButton {{ background: transparent; color: #40516A; }}
+#swarifWindow #navButton:hover, #swarifWindow #settingsIconButton:hover {{
+    background: #EDF4FD; color: #2478EB;
+}}
+#swarifWindow #logoutButton {{ background: transparent; color: #526176; }}
+#swarifWindow #logoutButton:hover {{ background: #FFF0F1; color: #D84B57; }}
+#swarifWindow #profile {{ background: #EEF5FE; }}
+#swarifWindow #profileName {{ color: #15233A; }}
+#swarifWindow[compact="true"] #windowCard,
+#swarifWindow[compact="true"] #titleBar {{ background: white; border-color: #C9D9EA; }}
 QScrollBar:vertical {{ background: transparent; width: 5px; margin: 3px; }}
-QScrollBar::handle:vertical {{ background: #CAD8E8; border-radius: 2px; min-height: 28px; }}
+QScrollBar::handle:vertical {{ background: #46698F; border-radius: 2px; min-height: 28px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 """
 
@@ -2121,6 +3241,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Swarif")
+    app.setWindowIcon(QIcon(str(static_asset("Swarif_Logo.ico"))))
     app.setFont(QFont("Arial", 10))
     window = SwarifWindow()
     window.show()

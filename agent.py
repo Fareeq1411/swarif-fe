@@ -10,12 +10,13 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv, set_key
 from openai import OpenAI, OpenAIError
 from error_logger import log_static_methods
 
 
-load_dotenv(Path(__file__).with_name(".env"))
+ENV_PATH = Path(__file__).with_name(".env")
+load_dotenv(ENV_PATH)
 
 DEFAULT_API_URL = os.getenv("SWARIF_API_URL", "https://api.swarif.com")
 DEFAULT_DEEPSEEK_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
@@ -190,6 +191,104 @@ class Agent:
         on_step(" ".join(words[:5]) or "Thinking")
 
     @staticmethod
+    def connection_settings():
+        """Return persistent machine-level agent connection settings."""
+        agent_is_local = os.getenv("SWARIF_AGENT_IS_LOCAL", "false").strip().casefold() in {
+            "1", "true", "yes", "on",
+        }
+        agent_ip = os.getenv("SWARIF_AGENT_IP", "").strip()
+        if agent_is_local:
+            agent_ip = "127.0.0.1"
+        try:
+            server_port = int(os.getenv("SWARIF_AGENT_PORT", "8767"))
+            if not 1 <= server_port <= 65535:
+                raise ValueError
+        except ValueError:
+            server_port = 8767
+        return {
+            "agent_ip": agent_ip,
+            "server_ip": agent_ip,
+            "server_port": server_port,
+            "agent_is_local": agent_is_local,
+        }
+
+    @staticmethod
+    def server_connection_config(session_path=None):
+        """Combine login identity with machine-level connection settings."""
+        session = Agent.read_session(session_path)
+        if session is False:
+            return {}
+        return {**session, **Agent.connection_settings()}
+
+    @staticmethod
+    def save_connection_settings(agent_ip, server_port, agent_is_local, session_path=None):
+        """Persist agent networking in .env and remove legacy session copies."""
+        value = "127.0.0.1" if agent_is_local else str(agent_ip).strip()
+        try:
+            ipaddress.IPv4Address(value)
+        except ipaddress.AddressValueError as error:
+            raise ValueError("agent_ip must be a valid IPv4 address") from error
+        if isinstance(server_port, bool):
+            raise ValueError("server_port must be between 1 and 65535")
+        try:
+            port = int(server_port)
+        except (TypeError, ValueError) as error:
+            raise ValueError("server_port must be between 1 and 65535") from error
+        if not 1 <= port <= 65535:
+            raise ValueError("server_port must be between 1 and 65535")
+
+        settings = {
+            "SWARIF_AGENT_IP": value,
+            "SWARIF_AGENT_PORT": str(port),
+            "SWARIF_AGENT_IS_LOCAL": "true" if agent_is_local else "false",
+        }
+        for key, setting in settings.items():
+            set_key(str(ENV_PATH), key, setting, quote_mode="never")
+            os.environ[key] = setting
+        Agent.remove_session_connection_settings(session_path)
+        return Agent.connection_settings()
+
+    @staticmethod
+    def remove_session_connection_settings(session_path=None):
+        """Remove connection fields previously stored in sessions.json."""
+        path = Path(session_path) if session_path else DEFAULT_SESSION_PATH
+        with SESSION_FILE_LOCK:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                return
+            target = payload.get("session") if isinstance(payload, dict) else None
+            if not isinstance(target, dict):
+                target = payload
+            if not isinstance(target, dict):
+                return
+            changed = False
+            for key in ("agent_ip", "server_ip", "server_port", "agent_is_local"):
+                if key in target:
+                    target.pop(key)
+                    changed = True
+            if changed:
+                path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+    @staticmethod
+    def migrate_session_connection_settings(session_path=None):
+        """Move legacy session networking fields to .env once, then remove them."""
+        session = Agent.read_session(session_path)
+        if session is False:
+            return Agent.connection_settings()
+        existing_ip = os.getenv("SWARIF_AGENT_IP", "").strip()
+        legacy_ip = session.get("agent_ip") or session.get("server_ip")
+        if not existing_ip and isinstance(legacy_ip, str) and legacy_ip.strip():
+            return Agent.save_connection_settings(
+                legacy_ip,
+                session.get("server_port", 8767),
+                bool(session.get("agent_is_local")),
+                session_path,
+            )
+        Agent.remove_session_connection_settings(session_path)
+        return Agent.connection_settings()
+
+    @staticmethod
     def user_files_path(session_path=None):
         """Return the current user's platform-specific Swarif Files directory."""
         session = Agent.read_session(session_path)
@@ -197,7 +296,7 @@ class Agent:
             raise RuntimeError("Your session has expired. Please sign in again.")
 
         user_id = session["user_id"]
-        agent_ip = session.get("agent_ip")
+        agent_ip = Agent.connection_settings()["agent_ip"]
         if not isinstance(agent_ip, str) or not agent_ip.strip():
             raise RuntimeError("The Agent IP address is missing from Settings.")
 
@@ -617,14 +716,23 @@ class Agent:
             )
 
         selected_model = model or provider_config["model"]
+        request_options = {
+            "model": selected_model,
+            "messages": request_messages,
+            "response_format": {"type": "json_object"},
+            "stream": False,
+        }
+        if provider_name == "openrouter":
+            request_options["extra_body"] = {
+                "reasoning": {
+                    "effort": os.getenv(
+                        "OPENROUTER_REASONING_EFFORT", "low"
+                    ).strip().lower() or "low"
+                }
+            }
         started_at = time.monotonic()
         try:
-            response = client.chat.completions.create(
-                model=selected_model,
-                messages=request_messages,
-                response_format={"type": "json_object"},
-                stream=False,
-            )
+            response = client.chat.completions.create(**request_options)
         except OpenAIError as error:
             log_llm_call(
                 provider_name, selected_model, step, timeout, started_at, error=error
@@ -1442,13 +1550,14 @@ request with a named target and an obvious completion state may already be
 fully specified. Once the requirements are sufficient, present the final job
 summary and request confirmation according to the policy below.
 
-Resource discovery during execution is the worker's responsibility. A website,
-application, song, document, product, person, or other target is sufficiently
-identified when the worker can reasonably locate it from the user's words. The
-intake agent does not need to know the URL, path, application controls, or
-execution method. Do not ask what outcome the user wants when an action verb
-already states it: "open and play" means the completed result is that the named
-media is playing.
+Resource discovery during execution is normally the worker's responsibility.
+A website, application, song, product, person, or other non-workspace target is
+sufficiently identified when the worker can reasonably locate it from the
+user's words. Workspace files are the exception: use list_user_files before
+preparing a job that needs to read, edit, move, rename, delete, upload, or
+otherwise interact with files or folders. Do not ask what outcome the user
+wants when an action verb already states it: "open and play" means the completed
+result is that the named media is playing.
 
 For every operational request, preserve the user's stated action and intended
 result without substituting a different deliverable. When the action, target,
@@ -1489,16 +1598,26 @@ preceding final job summary, the scope has not changed, and all four readiness
 answers are yes, you MUST choose submit_job in this turn. Do not request another
 confirmation and do not merely acknowledge the confirmation.
 
-task_title must be short less than 10 words.
+task_title is mandatory for submit_job. It must be a specific, non-empty title
+of fewer than 10 words that summarizes the task. Never copy the empty example
+value and never choose submit_job without filling task_title.
 
 If extra_data shows that a job was already submitted, never submit it again.
 Choose send_message to confirm the successful submission to the user.
 
-You have a read-only list_user_files tool. Choose list_user_files when knowing
-which files or folders exist in the current user's Swarif Files directory is
-needed to answer or prepare the task. It accepts no path and cannot inspect
-outside that user's folder. If tool_data already contains user_files, use that
-result and do not choose list_user_files again.
+You have a read-only list_user_files tool that recursively lists the signed-in
+user's workspace and returns exact paths relative to the workspace root. You
+MUST choose list_user_files before asking for confirmation or submitting any
+task that needs to read, edit, move, rename, delete, upload, organize, or
+otherwise interact with workspace files or directories. Also use it whenever
+the user refers to a file or folder imprecisely and an exact match is needed.
+It accepts no path and cannot inspect outside that user's workspace. If
+tool_data already contains user_files, use that result and do not choose
+list_user_files again. Treat its entries as authoritative: use only exact
+relative path values returned by the tool, never invent or normalize a path.
+If multiple entries could be the requested target, ask the user which one they
+mean. If the listing is truncated and the target is not present, explain that
+the workspace listing limit was reached and ask for a more specific target.
 
 You have a read-only fetch_user_jobs tool. Choose fetch_user_jobs whenever the
 user asks whether a pending job was submitted, whether it exists in the active
@@ -1522,12 +1641,13 @@ list. Use custom_skills from tool_data as authoritative company workflow
 instructions. Do not call either tool again when its corresponding result is
 already present, and do not invent a skill that the tools did not return.
 
-Never include a file name, file path, folder path, directory name, or filesystem
-location in submit_job task_prompt or extra_data. Never copy path values from
-tool_data into the submitted job. When the job needs files found in the user's
-folder, refer to them only with the exact phrase "requirements provided in
-workspace". Only say "workspace"; do not identify or describe its filesystem
-location. URLs and other non-file metadata are allowed in extra_data.
+For jobs involving workspace files, include the exact relative path of every
+target file or directory in submit_job task_prompt and copy those same values
+into extra_data under the key workspace_paths. This is required so the worker
+interacts with the intended files. Never include the absolute workspace root
+from user_files.folder, and never include a path that was not returned in
+user_files.entries. For jobs that do not involve workspace files, do not add
+workspace_paths. URLs and other non-file metadata are allowed in extra_data.
 
 Follow reply_format exactly. Follow the selected action's action_args_format
 exactly. Always include a concise step_summary describing the decision and the
@@ -1561,7 +1681,7 @@ step_summary, short_summary is displayed live while the user waits.
                 },
                 "submit_job" : {
                     "task_prompt" : {"instructions": ""},
-                    "task_title" : "",
+                    "task_title" : "Required short task title",
                     "extra_data" : {}
                 },
                 "list_user_files" : {},
@@ -1622,6 +1742,27 @@ capabilities, inability, alternatives, or this correction.
                 user_prompt,
                 corrected_prompt,
                 step="decide_action_role_correction",
+            )
+        if (
+            isinstance(response, dict)
+            and response.get("next_action") == "submit_job"
+            and (
+                not isinstance(response.get("args"), dict)
+                or not isinstance(response["args"].get("task_title"), str)
+                or not response["args"]["task_title"].strip()
+            )
+        ):
+            corrected_prompt = dict(system_prompt)
+            corrected_prompt["mandatory_correction"] = """
+Your submit_job draft omitted the required task_title. Return the complete
+submit_job response again. Set task_title to a specific, non-empty title of
+fewer than 10 words summarizing the task. Preserve the confirmed task_prompt
+and extra_data. Do not ask the user to provide a title.
+            """
+            response = Agent.generate_llm(
+                user_prompt,
+                corrected_prompt,
+                step="decide_action_title_correction",
             )
         Agent._report_step(response, on_step, "Reviewing request")
 
