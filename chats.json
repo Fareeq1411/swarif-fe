@@ -158,5 +158,28 @@
     "type": "out",
     "message": "The job \"Key 100 purchase orders into ERP invoices\" was submitted successfully.",
     "created_time": "2026-09-12T03:39:59.000Z"
+  },
+  {
+    "id": "896b07d1-863c-439e-8d59-c4ded0770319",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "okay in scenario_1 folder there is /Library/Application Support/Swarif/Files/31189df6-162b-4607-b65b-966c1daae33a/scenario_1/purchase_orders_100.xlsx this excel where you have to open the ERP http://127.0.0.1:5000/ and go to invoice section and submit the purchase order into invoice form in erp. all the purchase order must be key in",
+    "created_time": "2026-09-14T10:48:59.529459+00:00"
+  },
+  {
+    "id": "85d561a7-167a-44b3-9fcb-cc5d13a95af9",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "out",
+    "message": "Quick heads-up before I queue anything: my records show this exact job \u2014 \"Key 100 purchase orders into ERP invoices\" \u2014 was already submitted successfully on 12 Sep 2026, so those purchase orders should already be sitting in the ERP invoice section.\n\nHere is the job as it stands, in case you want a fresh run:\n\n- **Objective** \u2014 Enter every purchase order from the Excel file into the ERP invoice section, one invoice per purchase order.\n- **Input** \u2014 `scenario_1/purchase_orders_100.xlsx` (100 rows expected)\n- **Target** \u2014 ERP at http://127.0.0.1:5000/ \u2192 Invoice section \u2192 invoice entry form\n- **Steps** \u2014 Read all purchase orders from the file, open the ERP invoice section, key each PO's fields (supplier, dates, line items, quantities, amounts, PO reference) into the matching invoice fields, then save/submit each invoice.\n- **Deliverable** \u2014 All purchase orders recorded in the ERP invoice section, plus a short report stating how many were entered and flagging any row that could not be entered.\n- **Scope** \u2014 Only the purchase orders in that file; no other data touched.\n\nTwo things I need from you first:\n\n1. Do you want a fresh run, or was the 12 Sep submission fine and something specific needs checking (for example, confirming all 100 actually landed)?\n2. If it is a fresh run, should the same POs be keyed in again, or should anything already present be skipped? Re-entering them could create duplicate invoices.\n\nThis has not been submitted yet \u2014 tell me which of the two you want and I'll take it from there."
+  },
+  {
+    "id": "533ea125-01cb-4c8f-a534-92ab7d8d7ae2",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "fresh run , those present is skipped",
+    "created_time": "2026-09-14T10:49:53.800110+00:00"
   }
 ]

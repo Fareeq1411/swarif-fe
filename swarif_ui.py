@@ -950,6 +950,7 @@ class FilesPanel(QFrame):
 
 class GrowingMessageEdit(QTextEdit):
     submit_requested = pyqtSignal()
+    height_changed = pyqtSignal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -967,7 +968,11 @@ class GrowingMessageEdit(QTextEdit):
         document_height = self.document().documentLayout().documentSize().height()
         margins = self.contentsMargins()
         target = int(document_height + margins.top() + margins.bottom() + 10)
-        self.setFixedHeight(max(34, min(target, 180)))
+        target = max(34, min(target, 180))
+        changed = self.height() != target
+        self.setFixedHeight(target)
+        if changed:
+            self.height_changed.emit(target)
 
     def keyPressEvent(self, event):
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) and (
@@ -1623,6 +1628,7 @@ class ChatPanel(QFrame):
         messages = QVBoxLayout(conversation)
         messages.setContentsMargins(18, 20, 18, 96)
         messages.setSpacing(2)
+        self.messages_layout = messages
         valid_messages = [item for item in (chat_messages or []) if isinstance(item, dict)]
         self.load_more_button = QPushButton("Load more")
         self.load_more_button.setObjectName("loadMoreButton")
@@ -1744,9 +1750,10 @@ class ChatPanel(QFrame):
         self.composer = composer
         composer.message_submitted.connect(self.message_submitted)
         composer.stop_requested.connect(self.stop_requested)
+        composer.message.height_changed.connect(self.update_composer_height)
         composer_layout.addWidget(composer)
         self.composer_wrap = composer_wrap
-        composer_wrap.setFixedHeight(composer.sizeHint().height() + 26)
+        self.update_composer_height(composer.message.height())
         composer_wrap.show()
         composer_wrap.raise_()
         QTimer.singleShot(0, self.position_composer)
@@ -1769,6 +1776,20 @@ class ChatPanel(QFrame):
         self.composer_wrap.raise_()
         if hasattr(self, "jump_to_bottom_button"):
             self.position_jump_to_bottom_button()
+
+    def update_composer_height(self, editor_height):
+        if not hasattr(self, "composer_wrap"):
+            return
+        wrapper_height = max(84, int(editor_height) + 40)
+        self.composer_wrap.setFixedHeight(wrapper_height)
+        margins = self.messages_layout.contentsMargins()
+        self.messages_layout.setContentsMargins(
+            margins.left(),
+            margins.top(),
+            margins.right(),
+            wrapper_height + 12,
+        )
+        self.position_composer()
 
     def scroll_to_bottom(self):
         scrollbar = self.chat_scroll.verticalScrollBar()

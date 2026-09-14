@@ -1,15 +1,15 @@
 {
-  "current_step": "notify_user",
+  "current_step": "decide_action",
   "step_history": [
     {
       "step_no": 1,
       "step": "decide_action",
-      "summary": "Inspected the user's Swarif Files folder; found 79 entries."
+      "summary": "Inspected the user's Swarif Files folder; found 80 entries."
     },
     {
       "step_no": 2,
       "step": "decide_action",
-      "summary": "User explicitly confirmed the unchanged final summary for entering 100 purchase orders from scenario_1/purchase_orders_100.xlsx into the ERP invoice section at http://127.0.0.1:5000/. Scope is unchanged, all requirements are complete, and no prior submission of this job exists, so the job is submitted now with the exact workspace path."
+      "summary": "Checked company skills; found 1 titles."
     }
   ],
   "step_count": 2
