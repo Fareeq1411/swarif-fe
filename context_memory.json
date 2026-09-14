@@ -1,16 +1,5 @@
 {
   "current_step": "decide_action",
-  "step_history": [
-    {
-      "step_no": 1,
-      "step": "decide_action",
-      "summary": "Inspected the user's Swarif Files folder; found 80 entries."
-    },
-    {
-      "step_no": 2,
-      "step": "decide_action",
-      "summary": "Checked company skills; found 1 titles."
-    }
-  ],
-  "step_count": 2
+  "step_history": [],
+  "step_count": 0
 }

@@ -450,6 +450,34 @@ class SwarifBackend(QObject):
             self.backend_error.emit("The session is missing org_id.")
             return
 
+        if self._server_connection is None or not self._server_connection.connected:
+            Agent.append_local_chat(
+                {
+                    "id": f"local-{uuid.uuid4()}",
+                    "org_id": org_id.strip(),
+                    "user_id": user_id,
+                    "type": "in",
+                    "message": message,
+                    "created_time": datetime.now(timezone.utc).isoformat(),
+                    "delivery_status": "local_only",
+                }
+            )
+            Agent.append_local_chat(
+                {
+                    "id": f"local-{uuid.uuid4()}",
+                    "org_id": org_id.strip(),
+                    "user_id": user_id,
+                    "type": "out",
+                    "message": "Connect to agent first to start instruction",
+                    "created_time": datetime.now(timezone.utc).isoformat(),
+                    "delivery_status": "local_only",
+                }
+            )
+            self.agent_typing_changed.emit(False, "Thinking")
+            self.chat_file_changed.emit()
+            self._emit_task_state("idle")
+            return
+
         provisional = {
             "id": f"local-{uuid.uuid4()}",
             "org_id": org_id.strip(),
@@ -642,7 +670,8 @@ class SwarifBackend(QObject):
                         on_step=show_step,
                         on_job_created=job_created,
                     )
-            except (ValueError, RuntimeError, ConnectionError) as error:
+            except Exception as error:
+                log(error)
                 if still_current():
                     self._send_failure_reply(
                         error, items[-1]["org_id"], items[-1]["user_id"]
@@ -702,7 +731,8 @@ class SwarifBackend(QObject):
             Agent.replace_local_chat(provisional["id"], stored_message)
             self.chat_file_changed.emit()
             self._mark_agent_message_ready(sequence)
-        except (ValueError, RuntimeError, ConnectionError) as error:
+        except Exception as error:
+            log(error)
             self._drop_agent_message(sequence)
             with self._agent_condition:
                 cancelled = (
@@ -732,7 +762,8 @@ class SwarifBackend(QObject):
         try:
             if Agent.reply_message(message):
                 return
-        except (ValueError, RuntimeError, ConnectionError):
+        except Exception as reply_error:
+            log(reply_error)
             pass
 
         Agent.append_local_chat(

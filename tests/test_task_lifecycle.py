@@ -39,8 +39,9 @@ class FakeWindow(QObject):
 
 
 class FakeConnection:
-    def __init__(self, accepted=True):
+    def __init__(self, accepted=True, connected=True):
         self.accepted = accepted
+        self.connected = connected
         self.calls = []
 
     def cancel_job(self, user_id, job_id):
@@ -71,6 +72,30 @@ class TaskLifecycleTests(unittest.TestCase):
         composer.set_task_state("idle")
         self.assertEqual(composer.send.toolTip(), "Send (Shift+Enter)")
         self.assertTrue(composer.stop_status.isHidden())
+
+    def test_disconnected_send_replies_immediately_without_starting_task(self):
+        window = FakeWindow()
+        backend = SwarifBackend(window)
+        backend.set_server_connection(FakeConnection(connected=False))
+        messages = []
+        states = []
+        backend.task_state_changed.connect(states.append, Qt.DirectConnection)
+
+        with patch.object(
+            Agent,
+            "read_session",
+            return_value={"org_id": "org-1", "user_id": "user-1"},
+        ), patch.object(Agent, "append_local_chat", side_effect=messages.append):
+            backend.send_user_message("Run this instruction")
+
+        self.assertEqual([item["type"] for item in messages], ["in", "out"])
+        self.assertEqual(
+            messages[-1]["message"],
+            "Connect to agent first to start instruction",
+        )
+        self.assertEqual(states, ["idle"])
+        self.assertIsNone(backend._active_task)
+        self.assertEqual(backend._agent_messages, {})
 
     def test_stop_cancels_only_exact_submitted_job(self):
         window = FakeWindow()
