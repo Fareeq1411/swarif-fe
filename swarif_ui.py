@@ -1,5 +1,7 @@
 import json
+import html
 import ipaddress
+import re
 import shutil
 import socket
 import sys
@@ -9,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 from PyQt5.QtCore import QEvent, QMimeData, QPoint, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QIcon, QPainter, QPixmap, QTransform
+from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QIcon, QPainter, QPainterPath, QPixmap, QRegion, QTransform
 from PyQt5.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -197,6 +199,18 @@ class TitleBar(QFrame):
             self._drag_offset = None
         super().mouseReleaseEvent(event)
 
+def set_selected_elevation(widget, selected):
+    """Apply a soft raised shadow to a selected blue control."""
+    if not selected:
+        widget.setGraphicsEffect(None)
+        return
+    shadow = QGraphicsDropShadowEffect(widget)
+    shadow.setBlurRadius(18)
+    shadow.setOffset(0, 5)
+    shadow.setColor(QColor(24, 104, 213, 90))
+    widget.setGraphicsEffect(shadow)
+
+
 class NavButton(QPushButton):
     def __init__(self, icon_name, text, active=False, parent=None):
         super().__init__(text, parent)
@@ -211,6 +225,7 @@ class NavButton(QPushButton):
         self.setIcon(
             qta.icon(self.icon_name, color="white" if active else "#40516A")
         )
+        set_selected_elevation(self, active)
         self.style().unpolish(self)
         self.style().polish(self)
 
@@ -320,6 +335,7 @@ class Sidebar(QFrame):
         settings_button.setCursor(Qt.PointingHandCursor)
         settings_button.setToolTip("Settings")
         settings_button.setAccessibleName("Settings")
+        set_selected_elevation(settings_button, active_page == "settings")
         settings_button.clicked.connect(
             lambda: self.activate_and_emit("settings", self.settings_clicked)
         )
@@ -343,6 +359,7 @@ class Sidebar(QFrame):
         self.settings_button.setIcon(
             qta.icon("fa5s.cog", color="white" if settings_active else "#40516A")
         )
+        set_selected_elevation(self.settings_button, settings_active)
         self.settings_button.style().unpolish(self.settings_button)
         self.settings_button.style().polish(self.settings_button)
         signal.emit()
@@ -354,11 +371,64 @@ class Sidebar(QFrame):
         self.status.style().polish(self.status)
 
 
+def format_chat_message(value, outgoing=False):
+    """Render a small, HTML-safe Markdown subset for chat bubbles."""
+    text = value if isinstance(value, str) else str(value or "")
+    foreground = "#FFFFFF" if outgoing else "#15233A"
+    code_background = "#1768D5" if outgoing else "#DCEBFD"
+    link_color = "#FFFFFF" if outgoing else "#1768D5"
+    token_pattern = re.compile(
+        r"(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\(https?://[^)\s]+\))"
+    )
+
+    def inline(source):
+        rendered = []
+        cursor = 0
+        for match in token_pattern.finditer(source):
+            rendered.append(html.escape(source[cursor:match.start()]))
+            token = match.group(0)
+            if token.startswith("`"):
+                code = html.escape(token[1:-1])
+                rendered.append(
+                    f'<span style="font-family: monospace; background-color: {code_background}; '
+                    f'color: {foreground};">&nbsp;{code}&nbsp;</span>'
+                )
+            elif token.startswith("**"):
+                rendered.append(f"<b>{html.escape(token[2:-2])}</b>")
+            else:
+                label, url = re.match(r"\[([^]]+)\]\((https?://[^)]+)\)", token).groups()
+                rendered.append(
+                    f'<a href="{html.escape(url, quote=True)}" '
+                    f'style="color: {link_color}; text-decoration: underline;">'
+                    f"{html.escape(label)}</a>"
+                )
+            cursor = match.end()
+        rendered.append(html.escape(source[cursor:]))
+        return "".join(rendered)
+
+    rendered_lines = []
+    for line in text.splitlines():
+        heading = re.fullmatch(r"\s*\*\*(.+?)\*\*\s*", line)
+        if heading:
+            rendered_lines.append(
+                f'<div style="font-size: 15px; font-weight: 700; color: {foreground}; '
+                f'margin-top: 7px; margin-bottom: 2px;">{html.escape(heading.group(1))}</div>'
+            )
+        elif re.match(r"^\s*[-•]\s+", line):
+            content = re.sub(r"^\s*[-•]\s+", "", line)
+            rendered_lines.append(f'<div style="margin-left: 6px;">&#8226;&nbsp;&nbsp;{inline(content)}</div>')
+        elif line.strip():
+            rendered_lines.append(f"<div>{inline(line)}</div>")
+        else:
+            rendered_lines.append("<br>")
+    return "".join(rendered_lines)
+
+
 class MessageBubble(QWidget):
     def __init__(self, text, timestamp, outgoing=False, parent=None):
         super().__init__(parent)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 2, 0, 6)
+        outer.setContentsMargins(6, 4, 6, 12)
         outer.setSpacing(4)
 
         line = QHBoxLayout()
@@ -368,13 +438,22 @@ class MessageBubble(QWidget):
         else:
             line.addWidget(BotAvatar(32), 0, Qt.AlignTop)
 
-        bubble = QLabel(text)
+        bubble = QLabel(format_chat_message(text, outgoing=outgoing))
+        bubble.setTextFormat(Qt.RichText)
         bubble.setWordWrap(True)
-        bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        bubble.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
+        )
+        bubble.setOpenExternalLinks(True)
         bubble.setObjectName("bubbleOutgoing" if outgoing else "bubbleIncoming")
         bubble.setMaximumWidth(255)
         bubble.setMinimumWidth(235 if outgoing else 220)
         bubble.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        bubble_shadow = QGraphicsDropShadowEffect(bubble)
+        bubble_shadow.setBlurRadius(18)
+        bubble_shadow.setOffset(0, 5)
+        bubble_shadow.setColor(QColor(31, 77, 133, 52))
+        bubble.setGraphicsEffect(bubble_shadow)
         line.addWidget(bubble, 0, Qt.AlignTop)
         if not outgoing:
             line.addStretch()
@@ -908,8 +987,13 @@ class Composer(QFrame):
         super().__init__(parent)
         self.setObjectName("composer")
         self.setMinimumHeight(58)
+        composer_shadow = QGraphicsDropShadowEffect(self)
+        composer_shadow.setBlurRadius(28)
+        composer_shadow.setOffset(0, 5)
+        composer_shadow.setColor(QColor(36, 120, 235, 55))
+        self.setGraphicsEffect(composer_shadow)
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(13, 6, 8, 6)
+        layout.setContentsMargins(15, 7, 8, 7)
         layout.setSpacing(8)
 
         attach = QPushButton()
@@ -928,6 +1012,11 @@ class Composer(QFrame):
         self.send.setToolTip("Send (Shift+Enter)")
         self.send.setAccessibleName("Send message")
         self.send.clicked.connect(self._button_clicked)
+        send_shadow = QGraphicsDropShadowEffect(self.send)
+        send_shadow.setBlurRadius(16)
+        send_shadow.setOffset(0, 4)
+        send_shadow.setColor(QColor(16, 111, 232, 95))
+        self.send.setGraphicsEffect(send_shadow)
 
         self.stop_status = QLabel("Stopping…")
         self.stop_status.setObjectName("stopStatus")
@@ -1338,6 +1427,7 @@ class JobsPanel(QFrame):
         self.inactive_tab = QPushButton(f"Inactive  {len(self.inactive_jobs)}")
         self.active_tab.setObjectName("jobTabActive")
         self.inactive_tab.setObjectName("jobTab")
+        set_selected_elevation(self.active_tab, True)
         self.active_tab.clicked.connect(lambda: self.switch_tab(0))
         self.inactive_tab.clicked.connect(lambda: self.switch_tab(1))
         tabs.addWidget(self.active_tab)
@@ -1384,6 +1474,8 @@ class JobsPanel(QFrame):
         self.job_lists.setCurrentIndex(index)
         self.active_tab.setObjectName("jobTabActive" if index == 0 else "jobTab")
         self.inactive_tab.setObjectName("jobTabActive" if index == 1 else "jobTab")
+        set_selected_elevation(self.active_tab, index == 0)
+        set_selected_elevation(self.inactive_tab, index == 1)
         for button in (self.active_tab, self.inactive_tab):
             button.style().unpolish(button)
             button.style().polish(button)
@@ -1529,7 +1621,7 @@ class ChatPanel(QFrame):
         conversation = QWidget()
         conversation.setObjectName("conversation")
         messages = QVBoxLayout(conversation)
-        messages.setContentsMargins(18, 20, 18, 8)
+        messages.setContentsMargins(18, 20, 18, 96)
         messages.setSpacing(2)
         valid_messages = [item for item in (chat_messages or []) if isinstance(item, dict)]
         self.load_more_button = QPushButton("Load more")
@@ -1642,7 +1734,10 @@ class ChatPanel(QFrame):
         self.chat_scroll.viewport().installEventFilter(self)
         self.position_jump_to_bottom_button()
 
-        composer_wrap = QWidget()
+        composer_wrap = QWidget(self)
+        composer_wrap.setObjectName("composerWrap")
+        composer_wrap.setAttribute(Qt.WA_TranslucentBackground)
+        composer_wrap.setAutoFillBackground(False)
         composer_layout = QVBoxLayout(composer_wrap)
         composer_layout.setContentsMargins(15, 10, 15, 16)
         composer = Composer()
@@ -1650,8 +1745,30 @@ class ChatPanel(QFrame):
         composer.message_submitted.connect(self.message_submitted)
         composer.stop_requested.connect(self.stop_requested)
         composer_layout.addWidget(composer)
-        layout.addWidget(composer_wrap)
+        self.composer_wrap = composer_wrap
+        composer_wrap.setFixedHeight(composer.sizeHint().height() + 26)
+        composer_wrap.show()
+        composer_wrap.raise_()
+        QTimer.singleShot(0, self.position_composer)
         QTimer.singleShot(0, self.update_scroll_controls)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "composer_wrap"):
+            self.position_composer()
+
+    def position_composer(self):
+        margin = 0
+        height = self.composer_wrap.height()
+        self.composer_wrap.setGeometry(
+            margin,
+            max(0, self.height() - height - margin),
+            max(0, self.width() - margin * 2),
+            height,
+        )
+        self.composer_wrap.raise_()
+        if hasattr(self, "jump_to_bottom_button"):
+            self.position_jump_to_bottom_button()
 
     def scroll_to_bottom(self):
         scrollbar = self.chat_scroll.verticalScrollBar()
@@ -1671,10 +1788,16 @@ class ChatPanel(QFrame):
 
     def position_jump_to_bottom_button(self):
         viewport = self.chat_scroll.viewport()
-        margin = 14
+        right_margin = 22
+        bottom_margin = 14
+        target_y = viewport.height() - self.jump_to_bottom_button.height() - bottom_margin
+        if hasattr(self, "composer_wrap"):
+            viewport_top = viewport.mapTo(self, QPoint(0, 0)).y()
+            capsule_top = self.composer_wrap.y() + 10
+            target_y = capsule_top - viewport_top - self.jump_to_bottom_button.height() - 8
         self.jump_to_bottom_button.move(
-            max(margin, viewport.width() - self.jump_to_bottom_button.width() - margin),
-            max(margin, viewport.height() - self.jump_to_bottom_button.height() - margin),
+            max(right_margin, viewport.width() - self.jump_to_bottom_button.width() - right_margin),
+            max(14, target_y),
         )
 
     def eventFilter(self, watched, event):
@@ -2055,7 +2178,7 @@ class SwarifWindow(QWidget):
         self._expanded_size = QSize(760, 700)
         self._expanded_position = None
         self.setWindowTitle("Swarif")
-        self.setWindowIcon(QIcon(str(static_asset("Swarif_Logo.ico"))))
+        self.setWindowIcon(QIcon(str(static_asset("Swarif_Logo_BG.png"))))
         self.setObjectName("swarifWindow")
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.Window)
         self.setAttribute(Qt.WA_TranslucentBackground)
@@ -2087,6 +2210,7 @@ class SwarifWindow(QWidget):
         root.addWidget(card)
 
         self.setStyleSheet(STYLESHEET)
+        QTimer.singleShot(0, self.update_window_card_mask)
         self.loading_overlay = LoadingOverlay(self)
         self.loading_overlay.hide()
         self.section_data_loaded.connect(self.finish_section_loading)
@@ -2658,8 +2782,22 @@ class SwarifWindow(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.update_window_card_mask()
         if hasattr(self, "loading_overlay"):
             self.position_loading_overlay()
+
+    def update_window_card_mask(self):
+        """Clip child panels so all four card corners remain rounded on Windows."""
+        if not hasattr(self, "window_card") or self.window_card.width() < 1:
+            return
+        radius = 34 if self._compact else 24
+        path = QPainterPath()
+        path.addRoundedRect(
+            QRectF(self.window_card.rect()),
+            radius,
+            radius,
+        )
+        self.window_card.setMask(QRegion(path.toFillPolygon().toPolygon()))
 
     def position_initially_bottom_right(self):
         """Place the first window show at bottom-right without anchoring it."""
@@ -3232,6 +3370,98 @@ QToolTip {{
 #swarifWindow #profileName {{ color: #15233A; }}
 #swarifWindow[compact="true"] #windowCard,
 #swarifWindow[compact="true"] #titleBar {{ background: white; border-color: #C9D9EA; }}
+
+/* Soft blue glass composer. */
+#swarifWindow #composerWrap {{
+    background: transparent;
+    border: none;
+}}
+#swarifWindow #composer {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 rgba(246, 251, 255, 238),
+        stop: 0.52 rgba(224, 241, 255, 214),
+        stop: 1 rgba(239, 248, 255, 230)
+    );
+    border: 1px solid #B7D8FB;
+    border-radius: 28px;
+}}
+#swarifWindow #messageInput {{
+    background: transparent;
+    color: #17375F;
+    border: none;
+    padding: 5px 4px;
+    font-size: 13px;
+}}
+#swarifWindow #messageInput::placeholder {{ color: #829ABD; }}
+#swarifWindow #attachButton {{
+    background: transparent;
+    border: none;
+    border-radius: 17px;
+}}
+#swarifWindow #attachButton:hover {{ background: rgba(192, 222, 252, 145); }}
+#swarifWindow #sendButton {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #369BFF,
+        stop: 0.48 #1684F5,
+        stop: 1 #086DE0
+    );
+    border: 1px solid rgba(83, 167, 255, 180);
+    border-radius: 20px;
+}}
+#swarifWindow #sendButton:hover {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 1, y2: 1,
+        stop: 0 #55AAFF,
+        stop: 1 #147BE8
+    );
+}}
+
+/* Raised, dimensional chat cards. */
+#swarifWindow #bubbleIncoming {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #F5FAFF,
+        stop: 0.55 #EAF3FF,
+        stop: 1 #DDECFD
+    );
+    color: #15233A;
+    border: 1px solid #C5DCF5;
+    border-radius: 16px;
+}}
+#swarifWindow #bubbleOutgoing {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #3A91F3,
+        stop: 0.5 #2478EB,
+        stop: 1 #1768D5
+    );
+    color: white;
+    border: 1px solid #579DF0;
+    border-radius: 16px;
+}}
+
+/* Raised selected controls. */
+#swarifWindow #navActive, #swarifWindow #settingsIconActive,
+#swarifWindow #jobTabActive {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #469AF5,
+        stop: 0.5 #2478EB,
+        stop: 1 #1768D5
+    );
+    color: white;
+    border: 1px solid #62A6F2;
+}}
+#swarifWindow #navActive:hover, #swarifWindow #settingsIconActive:hover,
+#swarifWindow #jobTabActive:hover {{
+    background: qlineargradient(
+        x1: 0, y1: 0, x2: 0, y2: 1,
+        stop: 0 #57A6FA,
+        stop: 1 #1C72DD
+    );
+}}
 QScrollBar:vertical {{ background: transparent; width: 5px; margin: 3px; }}
 QScrollBar::handle:vertical {{ background: #46698F; border-radius: 2px; min-height: 28px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
@@ -3241,7 +3471,7 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Swarif")
-    app.setWindowIcon(QIcon(str(static_asset("Swarif_Logo.ico"))))
+    app.setWindowIcon(QIcon(str(static_asset("Swarif_Logo_BG.png"))))
     app.setFont(QFont("Arial", 10))
     window = SwarifWindow()
     window.show()

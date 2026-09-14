@@ -18,7 +18,7 @@ PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible arm64
 ArchitecturesInstallIn64BitMode=x64compatible arm64
 WizardStyle=modern
-SetupIconFile=static\Swarif_Logo.ico
+SetupIconFile=static\Swarif_Logo_BG.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
 [Files]

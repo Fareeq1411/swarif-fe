@@ -797,7 +797,7 @@ def main():
     Agent.migrate_session_connection_settings()
     app = QApplication(sys.argv)
     app.setApplicationName("Swarif")
-    app.setWindowIcon(QIcon(str(static_asset("Swarif_Logo.ico"))))
+    app.setWindowIcon(QIcon(str(static_asset("Swarif_Logo_BG.png"))))
     window = SwarifWindow()
     backend = SwarifBackend(window)
     window.backend = backend
