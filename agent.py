@@ -2,6 +2,7 @@ import os
 import json
 import ipaddress
 import platform
+import shutil
 import socket
 import threading
 import time
@@ -13,10 +14,16 @@ from urllib.request import Request, urlopen
 from dotenv import load_dotenv, set_key
 from openai import OpenAI, OpenAIError
 from error_logger import log_static_methods
+from runtime_paths import APP_DATA_DIR, BUNDLE_DIR, IS_PACKAGED, writable_path
 
 
-ENV_PATH = Path(__file__).with_name(".env")
-load_dotenv(ENV_PATH)
+BUNDLED_ENV_PATH = BUNDLE_DIR / ".env"
+ENV_PATH = APP_DATA_DIR / ".env" if IS_PACKAGED else BUNDLED_ENV_PATH
+load_dotenv(BUNDLED_ENV_PATH)
+if IS_PACKAGED and not ENV_PATH.exists() and BUNDLED_ENV_PATH.exists():
+    shutil.copyfile(BUNDLED_ENV_PATH, ENV_PATH)
+if ENV_PATH != BUNDLED_ENV_PATH:
+    load_dotenv(ENV_PATH, override=True)
 
 DEFAULT_API_URL = os.getenv("SWARIF_API_URL", "https://api.swarif.com")
 DEFAULT_DEEPSEEK_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
@@ -38,31 +45,31 @@ CREATE_JOB_PATH = "/api/client-app/job/create-job"
 LIST_CUSTOM_SKILLS_PATH = "/api/users/get/list-custom-skills"
 ALL_CUSTOM_SKILLS_PATH = "/api/users/all-custom-skills"
 LEARNING_START_MESSAGE = 'Send "start" to start teaching the AI.'
-DEFAULT_SESSION_PATH = Path(os.getenv("SESSION_PATH", "sessions.json"))
-if not DEFAULT_SESSION_PATH.is_absolute():
-    DEFAULT_SESSION_PATH = Path(__file__).parent / DEFAULT_SESSION_PATH
-MEMORY_PATH = Path(os.getenv("MEMORY_PATH", "memory.md"))
-if not MEMORY_PATH.is_absolute():
-    MEMORY_PATH = Path(__file__).parent / MEMORY_PATH
+DEFAULT_SESSION_PATH = writable_path(os.getenv("SESSION_PATH", "sessions.json"))
+MEMORY_PATH = writable_path(os.getenv("MEMORY_PATH", "memory.md"))
 BEHAVIOR_PATH = Path(os.getenv("BEHAVIOR_PATH", "FRONT_AGENT_BEHAVIOR.md"))
 if not BEHAVIOR_PATH.is_absolute():
-    BEHAVIOR_PATH = Path(__file__).parent / BEHAVIOR_PATH
-CONTEXT_MEMORY_PATH = Path(os.getenv("CONTEXT_MEMORY_PATH", "context_memory.json"))
-if not CONTEXT_MEMORY_PATH.is_absolute():
-    CONTEXT_MEMORY_PATH = Path(__file__).parent / CONTEXT_MEMORY_PATH
-CHAT_PATH = Path(os.getenv("CHAT_PATH", "chats.json"))
-if not CHAT_PATH.is_absolute():
-    CHAT_PATH = Path(__file__).parent / CHAT_PATH
-EXTRA_DATA_PATH = Path(os.getenv("EXTRA_DATA_PATH", "extra_data.json"))
-if not EXTRA_DATA_PATH.is_absolute():
-    EXTRA_DATA_PATH = Path(__file__).parent / EXTRA_DATA_PATH
+    BEHAVIOR_PATH = BUNDLE_DIR / BEHAVIOR_PATH
+CONTEXT_MEMORY_PATH = writable_path(os.getenv("CONTEXT_MEMORY_PATH", "context_memory.json"))
+CHAT_PATH = writable_path(os.getenv("CHAT_PATH", "chats.json"))
+EXTRA_DATA_PATH = writable_path(os.getenv("EXTRA_DATA_PATH", "extra_data.json"))
 CHAT_FILE_LOCK = threading.RLock()
 SESSION_FILE_LOCK = threading.RLock()
-AGENT_LOG_PATH = Path(os.getenv("AGENT_LOG_PATH", "agent_log.txt"))
-if not AGENT_LOG_PATH.is_absolute():
-    AGENT_LOG_PATH = Path(__file__).parent / AGENT_LOG_PATH
+AGENT_LOG_PATH = writable_path(os.getenv("AGENT_LOG_PATH", "agent_log.txt"))
 AGENT_LOG_LOCK = threading.RLock()
 MAX_AGENT_LOG_BYTES = 1024 * 1024
+
+for _path, _initial_content in (
+    (MEMORY_PATH, ""),
+    (CHAT_PATH, "[]\n"),
+    (EXTRA_DATA_PATH, "{}\n"),
+    (
+        CONTEXT_MEMORY_PATH,
+        '{\n  "current_step": "decide_action",\n  "step_history": [],\n  "step_count": 0\n}\n',
+    ),
+):
+    if not _path.exists():
+        _path.write_text(_initial_content, encoding="utf-8")
 
 
 def log_llm_call(provider, model, step, timeout, started_at, response=None, error=None):

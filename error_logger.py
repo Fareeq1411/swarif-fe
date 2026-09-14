@@ -7,13 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
+from runtime_paths import BUNDLE_DIR, writable_path
 
 
-load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(BUNDLE_DIR / ".env")
 
-LOG_PATH = Path(os.getenv("LOG_PATH", "log.txt"))
-if not LOG_PATH.is_absolute():
-    LOG_PATH = Path(__file__).parent / LOG_PATH
+LOG_PATH = writable_path(os.getenv("LOG_PATH", "log.txt"))
 
 _LOG_LOCK = threading.RLock()
 _HOOKS_INSTALLED = False
