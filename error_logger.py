@@ -1,18 +1,12 @@
 import functools
-import os
 import sys
 import threading
 import traceback
 from datetime import datetime, timezone
-from pathlib import Path
-
-from dotenv import load_dotenv
-from runtime_paths import BUNDLE_DIR, writable_path
+from runtime_paths import writable_path
 
 
-load_dotenv(BUNDLE_DIR / ".env")
-
-LOG_PATH = writable_path(os.getenv("LOG_PATH", "log.txt"))
+LOG_PATH = writable_path("log.txt")
 
 _LOG_LOCK = threading.RLock()
 _HOOKS_INSTALLED = False

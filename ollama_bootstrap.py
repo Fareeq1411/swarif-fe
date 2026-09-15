@@ -11,7 +11,6 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
 from PyQt5.QtWidgets import (
     QApplication,
@@ -24,8 +23,6 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-
-load_dotenv(Path(__file__).with_name(".env"))
 
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
 DEFAULT_OLLAMA_MODEL = "qwen3:8b"
@@ -40,8 +37,8 @@ class OllamaBootstrap(QObject):
 
     def __init__(self, base_url=None, model=None, parent=None):
         super().__init__(parent)
-        self.base_url = (base_url or os.getenv("OLLAMA_BASE_URL", DEFAULT_OLLAMA_URL)).rstrip("/")
-        self.model = (model or os.getenv("OLLAMA_MODEL", DEFAULT_OLLAMA_MODEL)).strip()
+        self.base_url = (base_url or DEFAULT_OLLAMA_URL).rstrip("/")
+        self.model = (model or DEFAULT_OLLAMA_MODEL).strip()
         self._thread = None
         self._server_process = None
         self._ollama_executable = None
@@ -59,7 +56,7 @@ class OllamaBootstrap(QObject):
     def _run(self):
         try:
             if not self.model:
-                raise RuntimeError("OLLAMA_MODEL is missing from .env")
+                raise RuntimeError("The local LLM model is not configured")
             self.status_changed.emit("Starting Ollama…")
             self.progress_changed.emit(-1)
             self._ensure_ollama_running()

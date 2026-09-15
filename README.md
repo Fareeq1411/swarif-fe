@@ -21,8 +21,8 @@ The script performs the complete build automatically:
 - Creates the Windows installer.
 - Uses a temporary PyInstaller work directory outside the project, avoiding
   common OneDrive file-lock errors.
-- Creates the packaged `.env` directly from `.env.example`. The developer's
-  private `.env` is never bundled.
+- Fetches client-safe configuration from `api.swarif.com` at runtime. No
+  provider or database secrets are bundled.
 
 The finished files are:
 
@@ -60,9 +60,9 @@ The macOS application is created at:
 dist/Swarif.app
 ```
 
-The shared `Swarif.spec` build configuration creates the packaged `.env`
-directly from `.env.example`, just like the Windows build. Update
-`.env.example` with the release-safe configuration before compiling.
+The shared `Swarif.spec` build contains no `.env` file. Client-safe
+configuration is fetched from `api.swarif.com` and cached in the user's Swarif
+application-data directory.
 
 Open the compiled application with:
 

@@ -1,30 +1,17 @@
 # Build with: pyinstaller --clean --noconfirm Swarif.spec
 import sys
-import tempfile
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_data_files
 
 
 datas = collect_data_files("qtawesome")
-datas.append((".env.example", "."))
 datas.append(("FRONT_AGENT_BEHAVIOR.md", "."))
 datas.append(("static/Swarif_Logo.svg", "static"))
 datas.append(("static/Swarif_Logo.ico", "static"))
 datas.append(("static/Swarif_Logo_BG.svg", "static"))
 datas.append(("static/Swarif_Logo_BG.png", "static"))
 datas.append(("static/Swarif_Logo_BG.ico", "static"))
-runtime_config_dir = Path(tempfile.mkdtemp(prefix="swarif-runtime-config-"))
-runtime_env = runtime_config_dir / ".env"
-env_source = Path(SPECPATH) / ".env.example"
-env_bytes = env_source.read_bytes()
-if env_bytes.startswith((b"\xff\xfe", b"\xfe\xff")):
-    env_text = env_bytes.decode("utf-16")
-else:
-    env_text = env_bytes.decode("utf-8-sig")
-runtime_env.write_text(env_text, encoding="utf-8", newline="\n")
-datas.append((str(runtime_env), "."))
-
 a = Analysis(
     ["app.py"],
     pathex=[],

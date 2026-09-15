@@ -825,6 +825,11 @@ class SwarifBackend(QObject):
 
 def main():
     install_exception_hooks()
+    try:
+        Agent.refresh_frontend_config()
+    except Exception as error:
+        # A cached configuration remains usable while the API is temporarily down.
+        log(error)
     Agent.migrate_session_connection_settings()
     app = QApplication(sys.argv)
     app.setApplicationName("Swarif")

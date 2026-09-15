@@ -2,7 +2,6 @@ import os
 import json
 import ipaddress
 import platform
-import shutil
 import socket
 import threading
 import time
@@ -11,33 +10,16 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from dotenv import load_dotenv, set_key
 from openai import OpenAI, OpenAIError
 from error_logger import log_static_methods
-from runtime_paths import APP_DATA_DIR, BUNDLE_DIR, IS_PACKAGED, writable_path
+from runtime_paths import BUNDLE_DIR, writable_path
 
 
-BUNDLED_ENV_PATH = BUNDLE_DIR / ".env"
-ENV_PATH = APP_DATA_DIR / ".env" if IS_PACKAGED else BUNDLED_ENV_PATH
-load_dotenv(BUNDLED_ENV_PATH)
-if IS_PACKAGED and not ENV_PATH.exists() and BUNDLED_ENV_PATH.exists():
-    shutil.copyfile(BUNDLED_ENV_PATH, ENV_PATH)
-if ENV_PATH != BUNDLED_ENV_PATH:
-    load_dotenv(ENV_PATH, override=True)
-
-DEFAULT_API_URL = os.getenv("SWARIF_API_URL", "https://api.swarif.com")
-DEFAULT_DEEPSEEK_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
-DEFAULT_DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
-DEFAULT_GEMINI_URL = os.getenv(
-    "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai/"
-)
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-DEFAULT_OPENROUTER_URL = os.getenv(
-    "OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"
-)
-DEFAULT_OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini")
+DEFAULT_API_URL = "https://api.swarif.com"
 LOGIN_PATH = "/api/auth/login"
 GET_USER_PATH = "/api/user/get-user"
+GET_FRONTEND_CONFIG_PATH = "/api/swarif/get-config/fe"
+GET_LLM_API_KEY_PATH = "/api/swarif/get-llm-api-key"
 GET_CHAT_PATH = "/api/client-app/get-chat"
 SEND_MESSAGE_PATH = "/api/client-app/send-message"
 FETCH_JOB_PATH = "/api/client-app/job/fetch-job"
@@ -45,17 +27,19 @@ CREATE_JOB_PATH = "/api/client-app/job/create-job"
 LIST_CUSTOM_SKILLS_PATH = "/api/users/get/list-custom-skills"
 ALL_CUSTOM_SKILLS_PATH = "/api/users/all-custom-skills"
 LEARNING_START_MESSAGE = 'Send "start" to start teaching the AI.'
-DEFAULT_SESSION_PATH = writable_path(os.getenv("SESSION_PATH", "sessions.json"))
-MEMORY_PATH = writable_path(os.getenv("MEMORY_PATH", "memory.md"))
-BEHAVIOR_PATH = Path(os.getenv("BEHAVIOR_PATH", "FRONT_AGENT_BEHAVIOR.md"))
-if not BEHAVIOR_PATH.is_absolute():
-    BEHAVIOR_PATH = BUNDLE_DIR / BEHAVIOR_PATH
-CONTEXT_MEMORY_PATH = writable_path(os.getenv("CONTEXT_MEMORY_PATH", "context_memory.json"))
-CHAT_PATH = writable_path(os.getenv("CHAT_PATH", "chats.json"))
-EXTRA_DATA_PATH = writable_path(os.getenv("EXTRA_DATA_PATH", "extra_data.json"))
+DEFAULT_SESSION_PATH = writable_path("sessions.json")
+FRONTEND_CONFIG_PATH = writable_path("frontend_config.json")
+MEMORY_PATH = writable_path("memory.md")
+BEHAVIOR_PATH = BUNDLE_DIR / "FRONT_AGENT_BEHAVIOR.md"
+CONTEXT_MEMORY_PATH = writable_path("context_memory.json")
+CHAT_PATH = writable_path("chats.json")
+EXTRA_DATA_PATH = writable_path("extra_data.json")
 CHAT_FILE_LOCK = threading.RLock()
 SESSION_FILE_LOCK = threading.RLock()
-AGENT_LOG_PATH = writable_path(os.getenv("AGENT_LOG_PATH", "agent_log.txt"))
+CONFIG_FILE_LOCK = threading.RLock()
+LLM_API_KEY_LOCK = threading.RLock()
+_LLM_API_KEY_CACHE = {}
+AGENT_LOG_PATH = writable_path("agent_log.txt")
 AGENT_LOG_LOCK = threading.RLock()
 MAX_AGENT_LOG_BYTES = 1024 * 1024
 
@@ -74,7 +58,7 @@ for _path, _initial_content in (
 
 def log_llm_call(provider, model, step, timeout, started_at, response=None, error=None):
     """Append one metadata-only JSON line describing an LLM API call."""
-    usage = getattr(response, "usage", None)
+    usage = response.get("usage") if isinstance(response, dict) else getattr(response, "usage", None)
     entry = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "event": "llm_call",
@@ -86,9 +70,14 @@ def log_llm_call(provider, model, step, timeout, started_at, response=None, erro
         "status": "failed" if error is not None else "completed",
     }
     if usage is not None:
-        entry["input_tokens"] = getattr(usage, "prompt_tokens", None)
-        entry["output_tokens"] = getattr(usage, "completion_tokens", None)
-        entry["total_tokens"] = getattr(usage, "total_tokens", None)
+        if isinstance(usage, dict):
+            entry["input_tokens"] = usage.get("input_tokens")
+            entry["output_tokens"] = usage.get("output_tokens")
+            entry["total_tokens"] = usage.get("total_tokens")
+        else:
+            entry["input_tokens"] = getattr(usage, "prompt_tokens", None)
+            entry["output_tokens"] = getattr(usage, "completion_tokens", None)
+            entry["total_tokens"] = getattr(usage, "total_tokens", None)
     if error is not None:
         entry["error_type"] = type(error).__name__
 
@@ -200,17 +189,18 @@ class Agent:
     @staticmethod
     def connection_settings():
         """Return persistent machine-level agent connection settings."""
-        agent_is_local = os.getenv("SWARIF_AGENT_IS_LOCAL", "false").strip().casefold() in {
-            "1", "true", "yes", "on",
-        }
-        agent_ip = os.getenv("SWARIF_AGENT_IP", "").strip()
+        config = Agent.frontend_config()
+        agent_is_local = Agent._config_bool(
+            config.get("SWARIF_AGENT_IS_LOCAL", False)
+        )
+        agent_ip = str(config.get("SWARIF_AGENT_IP") or "").strip()
         if agent_is_local:
             agent_ip = "127.0.0.1"
         try:
-            server_port = int(os.getenv("SWARIF_AGENT_PORT", "8767"))
+            server_port = int(config.get("SWARIF_AGENT_PORT", 8767))
             if not 1 <= server_port <= 65535:
                 raise ValueError
-        except ValueError:
+        except (TypeError, ValueError):
             server_port = 8767
         return {
             "agent_ip": agent_ip,
@@ -218,6 +208,156 @@ class Agent:
             "server_port": server_port,
             "agent_is_local": agent_is_local,
         }
+
+    @staticmethod
+    def _config_bool(value):
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().casefold() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _read_config_cache():
+        with CONFIG_FILE_LOCK:
+            try:
+                cached = json.loads(FRONTEND_CONFIG_PATH.read_text(encoding="utf-8"))
+            except (FileNotFoundError, OSError, json.JSONDecodeError):
+                return {"remote": {}, "overrides": {}}
+        if not isinstance(cached, dict):
+            return {"remote": {}, "overrides": {}}
+        # Accept the original flat cache format if one was created by a preview build.
+        if "remote" not in cached and "overrides" not in cached:
+            return {"remote": cached, "overrides": {}}
+        return {
+            "remote": cached.get("remote") if isinstance(cached.get("remote"), dict) else {},
+            "overrides": (
+                cached.get("overrides")
+                if isinstance(cached.get("overrides"), dict)
+                else {}
+            ),
+        }
+
+    @staticmethod
+    def frontend_config(refresh_if_missing=True):
+        """Return cached backend configuration plus persistent local overrides."""
+        cached = Agent._read_config_cache()
+        remote = cached["remote"]
+        if refresh_if_missing and not remote:
+            try:
+                return Agent.refresh_frontend_config()
+            except Exception:
+                pass
+        return {**remote, **cached["overrides"]}
+
+    @staticmethod
+    def refresh_frontend_config(timeout=10):
+        """Fetch frontend-safe configuration once and persist it locally."""
+        endpoint = f"{DEFAULT_API_URL.rstrip('/')}{GET_FRONTEND_CONFIG_PATH}"
+        request = Request(
+            endpoint,
+            headers={"Accept": "application/json"},
+            method="GET",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                remote = json.load(response)
+        except HTTPError as error:
+            try:
+                body = json.loads(error.read().decode("utf-8"))
+                detail = body.get("message") or body.get("error", {}).get("message")
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                detail = None
+            raise RuntimeError(
+                f"Configuration API returned HTTP {error.code}: {detail or error.reason}"
+            ) from error
+        except URLError as error:
+            raise ConnectionError(
+                f"Could not connect to the configuration API at {endpoint}: {error.reason}"
+            ) from error
+        except (TimeoutError, OSError) as error:
+            raise ConnectionError(
+                f"Could not connect to the configuration API at {endpoint}: {error}"
+            ) from error
+        except json.JSONDecodeError as error:
+            raise RuntimeError("Configuration API returned invalid JSON") from error
+        if not isinstance(remote, dict) or not remote:
+            raise RuntimeError("Configuration API returned an empty configuration")
+
+        cached = Agent._read_config_cache()
+        payload = {"remote": remote, "overrides": cached["overrides"]}
+        with CONFIG_FILE_LOCK:
+            FRONTEND_CONFIG_PATH.write_text(
+                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            )
+        return {**remote, **cached["overrides"]}
+
+    @staticmethod
+    def get_llm_api_key(timeout=10, force_refresh=False):
+        """Fetch this account's organization LLM key and retain it in memory only."""
+        session = Agent.read_session()
+        if session is False:
+            raise RuntimeError("Your session has expired. Please sign in again.")
+        account_id = session.get("user_id") or session.get("id")
+        token = session.get("token")
+        account_type = session.get("type") or "user"
+        if account_type not in {"user", "org"}:
+            account_type = "user"
+        if not isinstance(account_id, str) or not account_id.strip():
+            raise RuntimeError("The session is missing the account ID")
+        if not isinstance(token, str) or not token.strip():
+            raise RuntimeError("Your session has expired. Please sign in again.")
+
+        cache_key = (account_type, account_id.strip(), token.strip())
+        with LLM_API_KEY_LOCK:
+            if not force_refresh and cache_key in _LLM_API_KEY_CACHE:
+                return _LLM_API_KEY_CACHE[cache_key]
+
+        endpoint = f"{DEFAULT_API_URL.rstrip('/')}{GET_LLM_API_KEY_PATH}"
+        payload = {
+            "id": account_id.strip(),
+            "token": token.strip(),
+            "type": account_type,
+        }
+        request = Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Accept": "application/json"},
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                result = json.load(response)
+        except HTTPError as error:
+            try:
+                body = json.loads(error.read().decode("utf-8"))
+                detail = body.get("message") or body.get("error", {}).get("message")
+            except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+                detail = None
+            raise RuntimeError(
+                f"LLM key API returned HTTP {error.code}: {detail or error.reason}"
+            ) from error
+        except URLError as error:
+            raise ConnectionError(
+                f"Could not connect to the LLM key API at {endpoint}: {error.reason}"
+            ) from error
+        except (TimeoutError, OSError) as error:
+            raise ConnectionError(
+                f"Could not connect to the LLM key API at {endpoint}: {error}"
+            ) from error
+        except json.JSONDecodeError as error:
+            raise RuntimeError("LLM key API returned invalid JSON") from error
+
+        api_key = result.get("llm_api_key") if isinstance(result, dict) else None
+        if not isinstance(api_key, str) or not api_key.strip():
+            raise RuntimeError("LLM key API response is missing llm_api_key")
+        with LLM_API_KEY_LOCK:
+            _LLM_API_KEY_CACHE.clear()
+            _LLM_API_KEY_CACHE[cache_key] = api_key.strip()
+        return api_key.strip()
+
+    @staticmethod
+    def clear_llm_api_key_cache():
+        with LLM_API_KEY_LOCK:
+            _LLM_API_KEY_CACHE.clear()
 
     @staticmethod
     def server_connection_config(session_path=None):
@@ -229,7 +369,7 @@ class Agent:
 
     @staticmethod
     def save_connection_settings(agent_ip, server_port, agent_is_local, session_path=None):
-        """Persist agent networking in .env and remove legacy session copies."""
+        """Persist agent networking as local frontend-config overrides."""
         value = "127.0.0.1" if agent_is_local else str(agent_ip).strip()
         try:
             ipaddress.IPv4Address(value)
@@ -246,12 +386,15 @@ class Agent:
 
         settings = {
             "SWARIF_AGENT_IP": value,
-            "SWARIF_AGENT_PORT": str(port),
-            "SWARIF_AGENT_IS_LOCAL": "true" if agent_is_local else "false",
+            "SWARIF_AGENT_PORT": port,
+            "SWARIF_AGENT_IS_LOCAL": bool(agent_is_local),
         }
-        for key, setting in settings.items():
-            set_key(str(ENV_PATH), key, setting, quote_mode="never")
-            os.environ[key] = setting
+        cached = Agent._read_config_cache()
+        cached["overrides"].update(settings)
+        with CONFIG_FILE_LOCK:
+            FRONTEND_CONFIG_PATH.write_text(
+                json.dumps(cached, indent=2) + "\n", encoding="utf-8"
+            )
         Agent.remove_session_connection_settings(session_path)
         return Agent.connection_settings()
 
@@ -279,11 +422,11 @@ class Agent:
 
     @staticmethod
     def migrate_session_connection_settings(session_path=None):
-        """Move legacy session networking fields to .env once, then remove them."""
+        """Move legacy session networking fields to the config cache once."""
         session = Agent.read_session(session_path)
         if session is False:
             return Agent.connection_settings()
-        existing_ip = os.getenv("SWARIF_AGENT_IP", "").strip()
+        existing_ip = Agent.connection_settings()["agent_ip"]
         legacy_ip = session.get("agent_ip") or session.get("server_ip")
         if not existing_ip and isinstance(legacy_ip, str) and legacy_ip.strip():
             return Agent.save_connection_settings(
@@ -477,7 +620,7 @@ class Agent:
             raise RuntimeError("The saved session is missing its token")
 
         endpoint = (
-            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{DEFAULT_API_URL.rstrip('/')}"
             f"{GET_USER_PATH}"
         )
         payload = json.dumps(
@@ -525,6 +668,7 @@ class Agent:
     @staticmethod
     def login(email, password, remember_me=False):
         """Authenticate a user and persist the returned session data."""
+        Agent.clear_llm_api_key_cache()
         if not isinstance(email, str) or not email.strip():
             raise ValueError("email must be a non-empty string")
         if not isinstance(password, str) or not password:
@@ -533,7 +677,7 @@ class Agent:
             raise ValueError("remember_me must be a boolean")
 
         endpoint = (
-            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{DEFAULT_API_URL.rstrip('/')}"
             f"{LOGIN_PATH}"
         )
         payload = json.dumps(
@@ -581,7 +725,7 @@ class Agent:
             raise RuntimeError("Login API response is missing org_id")
 
         user_endpoint = (
-            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{DEFAULT_API_URL.rstrip('/')}"
             f"{GET_USER_PATH}"
         )
         user_payload = json.dumps(
@@ -644,161 +788,125 @@ class Agent:
     def generate_ai_content(
         user_prompt,
         system_prompt,
-        model=None,
         timeout=60,
-        client=None,
-        provider=None,
         step=None,
     ):
-        """Generate a JSON dictionary using the configured LLM provider."""
+        """Generate structured content locally with backend-provided configuration."""
         def prompt_text(prompt, name):
             if isinstance(prompt, str):
                 if not prompt.strip():
                     raise ValueError(f"{name} must not be empty")
                 return prompt.strip()
-            try:
-                return json.dumps(prompt, ensure_ascii=False)
-            except (TypeError, ValueError) as error:
-                raise ValueError(f"{name} must be a string or JSON serializable") from error
+            if not isinstance(prompt, (dict, list)):
+                raise ValueError(f"{name} must be a string, object, or array")
+            return json.dumps(prompt, ensure_ascii=False)
 
         user_content = prompt_text(user_prompt, "user_prompt")
         system_content = prompt_text(system_prompt, "system_prompt")
         if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or timeout <= 0:
             raise ValueError("timeout must be a positive number")
 
-        request_messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"{system_content}\n\n"
-                    "Your entire response must be exactly one valid JSON object. "
-                    "Do not include Markdown fences, commentary, or any text before "
-                    "or after the JSON object."
-                ),
-            },
-            {"role": "user", "content": user_content},
-        ]
+        config = Agent.frontend_config()
+        provider_name = str(config.get("LLM_PROVIDER") or "").strip().lower()
+        if provider_name not in {"deepseek", "gemini", "openrouter"}:
+            # Refresh once in case the persistent cache predates LLM configuration.
+            config = Agent.refresh_frontend_config()
+            provider_name = str(config.get("LLM_PROVIDER") or "").strip().lower()
+        if provider_name not in {"deepseek", "gemini", "openrouter"}:
+            raise RuntimeError("Frontend configuration has an unsupported LLM_PROVIDER")
 
-        provider_name = (provider or os.getenv("LLM_PROVIDER", "deepseek")).strip().lower()
-        providers = {
-            "deepseek": {
-                "api_key": "DEEPSEEK_API_KEY",
-                "base_url": os.getenv("DEEPSEEK_BASE_URL", DEFAULT_DEEPSEEK_URL),
-                "model": os.getenv("DEEPSEEK_MODEL", DEFAULT_DEEPSEEK_MODEL),
-            },
-            "gemini": {
-                "api_key": "GEMINI_API_KEY",
-                "base_url": os.getenv("GEMINI_BASE_URL", DEFAULT_GEMINI_URL),
-                "model": os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
-            },
-            "openrouter": {
-                "api_key": "OPENROUTER_API_KEY",
-                "base_url": os.getenv("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_URL),
-                "model": os.getenv("OPENROUTER_MODEL", DEFAULT_OPENROUTER_MODEL),
-            },
-        }
-        if provider_name not in providers:
-            supported = ", ".join(providers)
-            raise ValueError(
-                f"Unsupported LLM provider '{provider_name}'. Choose one of: {supported}"
-            )
+        prefix = provider_name.upper()
+        base_url = str(
+            config.get(f"{prefix}_BASE_URL") or config.get("LLM_BASE_URL") or ""
+        ).strip()
+        selected_model = str(
+            config.get(f"{prefix}_MODEL") or config.get("LLM_MODEL") or ""
+        ).strip()
+        if not base_url or not selected_model:
+            config = Agent.refresh_frontend_config()
+            base_url = str(
+                config.get(f"{prefix}_BASE_URL") or config.get("LLM_BASE_URL") or ""
+            ).strip()
+            selected_model = str(
+                config.get(f"{prefix}_MODEL") or config.get("LLM_MODEL") or ""
+            ).strip()
+        if not base_url:
+            raise RuntimeError(f"Frontend configuration is missing {prefix}_BASE_URL")
+        if not selected_model:
+            raise RuntimeError(f"Frontend configuration is missing {prefix}_MODEL")
 
-        provider_config = providers[provider_name]
-        api_key_name = provider_config["api_key"]
-        api_key = os.getenv(api_key_name)
-        if client is None:
-            if not api_key:
-                raise RuntimeError(f"{api_key_name} is missing from .env")
-            default_headers = None
-            if provider_name == "openrouter":
-                default_headers = {
-                    "HTTP-Referer": os.getenv("OPENROUTER_SITE_URL", "https://swarif.com"),
-                    "X-Title": os.getenv("OPENROUTER_APP_NAME", "Swarif"),
-                }
-            client = OpenAI(
-                api_key=api_key,
-                base_url=provider_config["base_url"],
-                timeout=timeout,
-                default_headers=default_headers,
-            )
-
-        selected_model = model or provider_config["model"]
+        api_key = Agent.get_llm_api_key()
+        default_headers = None
+        if provider_name == "openrouter":
+            default_headers = {
+                "HTTP-Referer": str(config.get("OPENROUTER_SITE_URL") or "https://swarif.com"),
+                "X-Title": str(config.get("OPENROUTER_APP_NAME") or "Swarif"),
+            }
+        client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=timeout,
+            default_headers=default_headers,
+        )
         request_options = {
             "model": selected_model,
-            "messages": request_messages,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        f"{system_content}\n\n"
+                        "Your entire response must be exactly one valid JSON object. "
+                        "Do not include Markdown fences, commentary, or any text before "
+                        "or after the JSON object."
+                    ),
+                },
+                {"role": "user", "content": user_content},
+            ],
             "response_format": {"type": "json_object"},
             "stream": False,
         }
         if provider_name == "openrouter":
             request_options["extra_body"] = {
                 "reasoning": {
-                    "effort": os.getenv(
-                        "OPENROUTER_REASONING_EFFORT", "low"
-                    ).strip().lower() or "low"
+                    "effort": str(
+                        config.get("OPENROUTER_REASONING_EFFORT") or "low"
+                    ).strip().lower()
                 }
             }
         started_at = time.monotonic()
         try:
             response = client.chat.completions.create(**request_options)
         except OpenAIError as error:
-            log_llm_call(
-                provider_name, selected_model, step, timeout, started_at, error=error
-            )
+            log_llm_call(provider_name, selected_model, step, timeout, started_at, error=error)
             raise RuntimeError(
                 f"{provider_name.title()} API request failed: {error}"
             ) from error
         except Exception as error:
-            log_llm_call(
-                provider_name, selected_model, step, timeout, started_at, error=error
-            )
+            log_llm_call(provider_name, selected_model, step, timeout, started_at, error=error)
             raise
-
         if not response.choices:
-            error = ValueError(f"{provider_name.title()} API returned an empty response")
-            log_llm_call(
-                provider_name,
-                selected_model,
-                step,
-                timeout,
-                started_at,
-                response=response,
-                error=error,
-            )
-            raise RuntimeError(str(error)) from error
-
+            error = RuntimeError(f"{provider_name.title()} API returned an empty response")
+            log_llm_call(provider_name, selected_model, step, timeout, started_at, response=response, error=error)
+            raise error
         try:
             result = parse_llm_json_object(response.choices[0].message.content)
         except ValueError as error:
-            log_llm_call(
-                provider_name,
-                selected_model,
-                step,
-                timeout,
-                started_at,
-                response=response,
-                error=error,
-            )
+            log_llm_call(provider_name, selected_model, step, timeout, started_at, response=response, error=error)
             raise RuntimeError(
                 f"{provider_name.title()} API returned invalid JSON: {error}"
             ) from error
-
-        log_llm_call(
-            provider_name, selected_model, step, timeout, started_at, response=response
-        )
-
+        log_llm_call(provider_name, selected_model, step, timeout, started_at, response=response)
         return result
 
     @staticmethod
     def generate_llm(
-        user_prompt, system_prompt, model=None, timeout=60, client=None, step=None
+        user_prompt, system_prompt, timeout=60, step=None
     ):
         """Backward-compatible wrapper for :meth:`generate_ai_content`."""
         return Agent.generate_ai_content(
             user_prompt,
             system_prompt,
-            model=model,
             timeout=timeout,
-            client=client,
             step=step,
         )
 
@@ -853,6 +961,7 @@ class Agent:
     @staticmethod
     def clear_session():
         """Remove the active local session."""
+        Agent.clear_llm_api_key_cache()
         DEFAULT_SESSION_PATH.write_text("{}\n", encoding="utf-8")
         return True
 
@@ -882,7 +991,7 @@ class Agent:
             return False
         org_id = org_id.strip()
         user_id = session["id"].strip()
-        api_url = base_url or os.getenv("SWARIF_API_URL", DEFAULT_API_URL)
+        api_url = base_url or DEFAULT_API_URL
         endpoint = f"{api_url.rstrip('/')}{GET_CHAT_PATH}"
         payload = json.dumps(
             {
@@ -946,7 +1055,7 @@ class Agent:
             return False
 
         endpoint = (
-            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{DEFAULT_API_URL.rstrip('/')}"
             f"{FETCH_JOB_PATH}"
         )
         payload = json.dumps(
@@ -1027,7 +1136,7 @@ class Agent:
             raise RuntimeError("The signed-in session is missing org_id")
 
         endpoint = (
-            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{DEFAULT_API_URL.rstrip('/')}"
             f"{path}"
         )
         request = Request(
@@ -1160,7 +1269,7 @@ class Agent:
         except (TypeError, ValueError) as error:
             raise ValueError("task and extra_data must be JSON serializable") from error
 
-        api_url = base_url or os.getenv("SWARIF_API_URL", DEFAULT_API_URL)
+        api_url = base_url or DEFAULT_API_URL
         endpoint = f"{api_url.rstrip('/')}{CREATE_JOB_PATH}"
         request = Request(
             endpoint,
@@ -1206,7 +1315,7 @@ class Agent:
         Agent.read_local_chat()
 
         endpoint = (
-            f"{os.getenv('SWARIF_API_URL', DEFAULT_API_URL).rstrip('/')}"
+            f"{DEFAULT_API_URL.rstrip('/')}"
             f"{SEND_MESSAGE_PATH}"
         )
         payload = json.dumps(

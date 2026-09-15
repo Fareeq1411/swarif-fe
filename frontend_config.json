@@ -1,0 +1,28 @@
+{
+  "remote": {
+    "LOG_PATH": "log.txt",
+    "CHAT_PATH": "chats.json",
+    "MEMORY_PATH": "memory.md",
+    "GEMINI_MODEL": "gemini-3.1-flash-lite",
+    "LLM_PROVIDER": "deepseek",
+    "OLLAMA_MODEL": "qwen3:8b",
+    "SESSION_PATH": "sessions.json",
+    "AGENT_LOG_PATH": "agent_log.txt",
+    "DEEPSEEK_MODEL": "deepseek-flash",
+    "SWARIF_API_URL": "https://api.swarif.com",
+    "EXTRA_DATA_PATH": "extra_data.json",
+    "GEMINI_BASE_URL": "https://generativelanguage.googleapis.com/v1beta/openai/",
+    "OLLAMA_BASE_URL": "http://localhost:11434",
+    "SWARIF_AGENT_IP": "127.0.0.1",
+    "OPENROUTER_MODEL": "minimax/minimax-m2.5",
+    "DEEPSEEK_BASE_URL": "https://api.deepseek.com",
+    "SWARIF_AGENT_PORT": 8767,
+    "CONTEXT_MEMORY_PATH": "context_memory.json",
+    "OPENROUTER_APP_NAME": "Swarif",
+    "OPENROUTER_BASE_URL": "https://openrouter.ai/api/v1",
+    "OPENROUTER_SITE_URL": "https://swarif.com",
+    "OPENROUTER_PROVIDERS": "",
+    "SWARIF_AGENT_IS_LOCAL": true
+  },
+  "overrides": {}
+}

@@ -127,7 +127,7 @@ try {
     }
 
     Set-Location $PSScriptRoot
-    foreach ($RequiredFile in @("app.py", "Swarif.spec", "SwarifSetup.iss", "requirements-build.txt", ".env.example")) {
+    foreach ($RequiredFile in @("app.py", "Swarif.spec", "SwarifSetup.iss", "requirements-build.txt")) {
         if (-not (Test-Path (Join-Path $PSScriptRoot $RequiredFile))) {
             throw "Required project file is missing: $RequiredFile"
         }

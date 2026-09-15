@@ -2,11 +2,12 @@
 
 End users should receive a packaged build, not the Python source directory.
 The packaged build includes Python and every package in `requirements.txt`, so
-Python, pip, PyQt, and the OpenAI SDK do not need to be installed on the user's
+Python, pip, and PyQt do not need to be installed on the user's
 laptop.
 
-On both Windows and macOS, `Swarif.spec` generates the packaged `.env` from
-`.env.example`. It never bundles the developer's private `.env` file.
+On both Windows and macOS, `Swarif.spec` packages no `.env` file. Client-safe
+configuration is fetched from the Swarif API and cached in the user's
+application-data directory.
 
 Build on each target operating system; PyInstaller does not cross-compile.
 

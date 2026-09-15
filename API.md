@@ -1,6 +1,6 @@
 # Swarif Backend API
 
-Last updated: 25 August 2026
+Last updated: 15 September 2026
 
 All endpoints accept and return JSON. Generated database IDs are created by the application and checked against all current ID-bearing tables. Clients must not provide IDs for newly created records.
 
@@ -329,6 +329,91 @@ Success — `200 OK`:
 
 Every database field is returned, scoped to the supplied organization. Returns `400 Bad Request` when `org_id` is missing.
 
+## Configuration
+
+### Get agent configuration
+
+`GET /api/swarif/get-config/agent`
+
+Returns client-safe keys from the `env_agent` JSON column in the single `config` table row. Server-only secrets such as `DEEPSEEK_API_KEY` are excluded. No request body is required.
+
+Success — `200 OK`:
+
+```json
+{
+  "VISION": true,
+  "LLM_MODE": "deepseek",
+  "SWARIF_TCP_PORT": 8767
+}
+```
+
+Returns `404 Not Found` if the config row or `env_agent` value does not exist.
+
+### Get frontend configuration
+
+`GET /api/swarif/get-config/fe`
+
+Returns client-safe keys from the `env_client` JSON column in the single `config` table row. Server-only secrets such as `DEEPSEEK_API_KEY` are excluded. No request body is required.
+
+Success — `200 OK`:
+
+```json
+{
+  "LLM_PROVIDER": "deepseek",
+  "SWARIF_AGENT_IP": "127.0.0.1",
+  "SWARIF_AGENT_IS_LOCAL": true
+}
+```
+
+Returns `404 Not Found` if the config row or `env_client` value does not exist.
+
+## Organization LLM API key
+
+### Get LLM API key
+
+`POST /api/swarif/get-llm-api-key`
+
+Returns the `llm_api_key` belonging to the authenticated account's organization. The desktop application performs LLM generation locally; the backend no longer provides an LLM generation endpoint.
+
+Request for a user:
+
+```json
+{
+  "id": "user-id",
+  "token": "user-jwt-token",
+  "type": "user"
+}
+```
+
+For `type: "user"`, the backend validates that the JWT email belongs to the supplied user ID, obtains that user's `org_id`, and returns the key from the matching organization row.
+
+Request for an organization:
+
+```json
+{
+  "id": "organization-id",
+  "token": "organization-jwt-token",
+  "type": "org"
+}
+```
+
+For `type: "org"`, the backend validates that the JWT email belongs to the supplied organization ID and returns that organization's key. In both flows, the account and organization must be active.
+
+Success — `200 OK`:
+
+```json
+{
+  "llm_api_key": "organization-llm-api-key"
+}
+```
+
+Errors:
+
+- `400 Bad Request` when `id`, `token`, or `type` is missing, or when `type` is not `user` or `org`.
+- `401 Unauthorized` when the JWT is invalid or expired.
+- `403 Forbidden` when the token does not belong to the supplied ID, or the account/organization is inactive.
+- `404 Not Found` when the organization does not have an LLM API key configured.
+
 ## Client application
 
 ### Send message
@@ -424,7 +509,8 @@ Request:
 ```
 
 - `active` reads from `job_queue`.
-- `inactive` reads from `job_log`.
+- `inactive` reads from `job_log`; cancelled jobs are archived there and therefore
+  appear in inactive/history with status `2` and the cancellation marker in `response`.
 - `limit` must be a positive integer.
 
 Success — `200 OK`:
@@ -524,6 +610,7 @@ Request:
 
 Status mapping:
 
+- `0` — queued (the database default for a newly created job)
 - `1` — success
 - `2` — failed
 - `3` — processing
@@ -543,6 +630,49 @@ Errors:
 - `400 Bad Request` when `job_id` or a valid numeric `status` is not supplied.
 - `404 Not Found` when the job does not exist in `job_queue`.
 
+### Cancel job
+
+`POST /api/client-app/job/cancel`
+
+Cancels a queued or processing job when the supplied organization and user own it.
+The operation is idempotent: repeating the request for the same cancellation returns
+the same successful response.
+
+Request:
+
+```json
+{
+  "job_id": "job-id",
+  "org_id": "organization-id",
+  "user_id": "user-id"
+}
+```
+
+Success — `200 OK`:
+
+```json
+{
+  "success": true,
+  "cancelled": true,
+  "job_id": "job-id",
+  "status": 2,
+  "status_name": "failed"
+}
+```
+
+The current database status contract has no distinct cancellation code. Therefore,
+cancellation is persisted using the existing failed status (`2`) and a cancellation
+marker in the job's JSON `response` column:
+`{"cancelled":true,"reason":"client_requested"}`. Completion checks this marker
+and only completes queued/processing rows in the same atomic update, so a worker
+cannot complete a job after cancellation wins the race. The cancelled row is then
+archived in `job_log`, making it available through inactive/history jobs.
+
+Errors:
+
+- `400 Bad Request` when `job_id`, `org_id`, or `user_id` is missing.
+- `404 Not Found` when the job is unknown or does not belong to the supplied organization and user.
+
 ### Update and archive job
 
 `POST /api/client-app/job/update`
@@ -557,6 +687,8 @@ Request:
   "status": "success",
   "response": null,
   "token": 100,
+  "input_token": 70,
+  "output_token": 30,
   "context_memory": {
     "messages": 2
   }
@@ -569,7 +701,7 @@ Status mapping:
 - `failed` stores status `2`.
 - `pending` stores status `3`.
 
-`response` may be `null`. When supplied, `response` and `context_memory` must contain valid JSON. The update, copy to `job_log`, and deletion from `job_queue` run in one database transaction.
+`token`, `input_token`, and `output_token` are required non-negative integers. `response` may be `null`. When supplied, `response` and `context_memory` must contain valid JSON. The update, copy to `job_log`, and deletion from `job_queue` run in one database transaction.
 
 Success — `200 OK`:
 
@@ -580,6 +712,8 @@ Success — `200 OK`:
   "status_code": 1,
   "response": null,
   "token": 100,
+  "input_token": 70,
+  "output_token": 30,
   "context_memory": {
     "messages": 2
   }
@@ -593,6 +727,13 @@ Errors:
 - `409 Conflict` when the job cannot be transferred to `job_log`.
 
 ## Update history
+
+### 15 September 2026
+
+- Added agent and frontend configuration endpoints backed by the `config` table JSON columns.
+- Added authenticated retrieval of organization-specific LLM API keys for user and organization accounts.
+- Removed server-side LLM generation; generation now runs in the desktop application.
+- Excluded `DEEPSEEK_API_KEY` from configuration API responses.
 
 ### 25 August 2026
 
