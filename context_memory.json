@@ -4,7 +4,7 @@
     {
       "step_no": 1,
       "step": "decide_action",
-      "summary": "User's message \"confirm\" is a clear affirmative confirmation of the immediately preceding final summary for the repeat job (open YouTube and play \"The Only Exception\" by Paramore). Scope unchanged; no workspace files involved; task is fully specified and ready for the worker."
+      "summary": "User replied \"confirm\" to the most recent final summary for the WhatsApp message job to Irdynaa, and that summary is unchanged. No workspace files are involved. All four readiness questions are satisfied, so the job is submitted now."
     }
   ],
   "step_count": 1

@@ -1,53 +1,5 @@
 [
   {
-    "id": "799479c9-4a7b-4f36-a605-4fe9ccdcc0c8",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "in",
-    "message": "hi",
-    "created_time": "2026-09-14T14:05:33.000Z"
-  },
-  {
-    "id": "69f17f5f-2653-4cfb-a747-e039b740a976",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "out",
-    "message": "Sorry, I couldn't submit that job. Please try again. (DEEPSEEK_API_KEY is missing from .env)",
-    "created_time": "2026-09-14T14:05:36.000Z"
-  },
-  {
-    "id": "bc43e9f7-55df-4a84-80ea-54bf864b94a1",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "in",
-    "message": "hi",
-    "created_time": "2026-09-14T14:07:19.000Z"
-  },
-  {
-    "id": "e381b529-393e-4a2c-871d-6777b87922db",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "out",
-    "message": "Hi! Good to hear from you.\n\nI just need to know what you'd like me to take care of. Once you tell me the task, I'll gather any details the worker needs, show you a quick summary for approval, and then submit it.\n\nSo \u2014 what can I help you get organised today?",
-    "created_time": "2026-09-14T14:07:24.000Z"
-  },
-  {
-    "id": "fc358e5a-3fa4-421b-8814-d4c53a3bedef",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "in",
-    "message": "open youtube and play intifada",
-    "created_time": "2026-09-14T14:08:48.000Z"
-  },
-  {
-    "id": "ecc01aff-3824-49f9-bcb1-b6472903bb9d",
-    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
-    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
-    "type": "out",
-    "message": "Here's the job I've prepared \u2014 please review and confirm before I submit it.\n\n**Job summary**\n- **Objective:** Open YouTube and start playing \"Intifada\".\n- **Deliverable:** The track/video \"Intifada\" playing on YouTube.\n- **Target:** YouTube (youtube.com), search term \"Intifada\".\n- **Assumption:** If several results share the name, the worker will start the most relevant/top matching result.\n\n**Status:** This job has **not** been submitted yet.\n\nShall I go ahead and submit this exactly as described? If you have a specific artist, version, or link in mind, let me know and I'll update the summary first.",
-    "created_time": "2026-09-14T14:08:56.000Z"
-  },
-  {
     "id": "aabc19b0-cb5a-4114-92db-65600ec2886b",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
@@ -165,14 +117,15 @@
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "in",
     "message": "hi",
-    "created_time": "2026-09-15T01:15:51.695911+00:00"
+    "created_time": "2026-09-15T01:15:52.000Z"
   },
   {
     "id": "8a80f3cc-1196-4e4d-bdac-75fc4312be49",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "out",
-    "message": "Hi! Good to hear from you.\n\nQuick note: your earlier job \u2014 \"Play The Only Exception on YouTube\" \u2014 was submitted successfully, so that one is already handled.\n\nWhat would you like me to take on next? Tell me:\n- What the task is\n- What the finished result should look like\n- Anything the worker needs to know (files, links, accounts, deadlines, etc.)\n\nOnce I have the details, I'll prepare a complete job summary and ask for your confirmation before submitting it."
+    "message": "Hi! Good to hear from you.\n\nQuick note: your earlier job \u2014 \"Play The Only Exception on YouTube\" \u2014 was submitted successfully, so that one is already handled.\n\nWhat would you like me to take on next? Tell me:\n- What the task is\n- What the finished result should look like\n- Anything the worker needs to know (files, links, accounts, deadlines, etc.)\n\nOnce I have the details, I'll prepare a complete job summary and ask for your confirmation before submitting it.",
+    "created_time": "2026-09-15T01:15:56.000Z"
   },
   {
     "id": "0d05a40c-8028-4bc5-804b-1b2f73ea7acd",
@@ -180,14 +133,15 @@
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "in",
     "message": "redo last job",
-    "created_time": "2026-09-15T01:16:08.242130+00:00"
+    "created_time": "2026-09-15T01:16:09.000Z"
   },
   {
     "id": "dd8a632c-9bc2-4b93-a44a-53c4dda01725",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "out",
-    "message": "Happy to run that again.\n\nFor the record: your previous job \u2014 \"Play The Only Exception on YouTube\" \u2014 was already submitted successfully. This will be a fresh repeat of the same task.\n\n**Objective**\nOpen YouTube and play the song \"The Only Exception\" (Paramore).\n\n**Deliverable**\nThe song is playing on YouTube.\n\n**Details for the worker**\n- Target site: YouTube\n- Search/play: \"The Only Exception\"\n- If several versions come up, play the official artist audio/video (or the closest match).\n- Assumption: no specific version, remix, or link requested \u2014 a YouTube search is fine.\n\n**Status**\nThis job has not been submitted yet.\n\nPlease confirm whether I should submit this exact job, and I'll send it to the worker right away."
+    "message": "Happy to run that again.\n\nFor the record: your previous job \u2014 \"Play The Only Exception on YouTube\" \u2014 was already submitted successfully. This will be a fresh repeat of the same task.\n\n**Objective**\nOpen YouTube and play the song \"The Only Exception\" (Paramore).\n\n**Deliverable**\nThe song is playing on YouTube.\n\n**Details for the worker**\n- Target site: YouTube\n- Search/play: \"The Only Exception\"\n- If several versions come up, play the official artist audio/video (or the closest match).\n- Assumption: no specific version, remix, or link requested \u2014 a YouTube search is fine.\n\n**Status**\nThis job has not been submitted yet.\n\nPlease confirm whether I should submit this exact job, and I'll send it to the worker right away.",
+    "created_time": "2026-09-15T01:16:13.000Z"
   },
   {
     "id": "9a7f340f-fea1-4493-9adb-4fd5b9741d74",
@@ -195,22 +149,101 @@
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "in",
     "message": "confirm",
-    "created_time": "2026-09-15T01:16:16.881320+00:00"
+    "created_time": "2026-09-15T01:16:17.000Z"
   },
   {
     "id": "4d81a26d-e55d-4019-9745-32820fac4d5f",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "out",
-    "message": "The job \"Play The Only Exception on YouTube\" was submitted successfully."
+    "message": "The job \"Play The Only Exception on YouTube\" was submitted successfully.",
+    "created_time": "2026-09-15T01:16:23.000Z"
   },
   {
-    "id": "local-d2be7479-eb00-4a4e-a141-36fd00e8b5a8",
+    "id": "796205c1-ce50-4c91-ba7d-b8d17c360f0a",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "open whatsapp on this desktop and send to Irdynaa Hi Love You message",
+    "created_time": "2026-09-15T07:57:18.071341+00:00"
+  },
+  {
+    "id": "49d097e5-abc7-47bf-a18f-de3649e55364",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "out",
+    "message": "Here's the job I have ready for you.\n\n**Objective**\nOpen WhatsApp on this desktop and send a message to the contact named \"Irdynaa\".\n\n**Deliverable**\nThe message \"Hi Love You\" is sent to Irdynaa in WhatsApp.\n\n**Details for the worker**\n- Platform: WhatsApp desktop app on this machine\n- Recipient: the contact named \"Irdynaa\" (exact name as written)\n- Message text: Hi Love You\n\n**Assumption**\nThere is one contact matching \"Irdynaa\"; if several near-matches appear, the worker should use the closest exact match and note the choice.\n\n**Status**\nThis job has not been submitted yet.\n\nPlease confirm whether I should submit this exact job, and I'll send it to the worker right away."
+  },
+  {
+    "id": "2ba0b510-300e-438b-b042-ec7c076b10fc",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "Confirm",
+    "created_time": "2026-09-15T07:57:37.018480+00:00"
+  },
+  {
+    "id": "a1c27e6a-35be-4031-8277-115d063e686b",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "out",
+    "message": "The job \"Send WhatsApp Message to Irdynaa\" was submitted successfully."
+  },
+  {
+    "id": "local-8bdd0ed0-ffd9-41f6-952b-f404cef09a2e",
     "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
     "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
     "type": "out",
     "message": "Cancellation failed: timed out",
-    "created_time": "2026-09-15T01:18:40.304417+00:00",
+    "created_time": "2026-09-15T08:04:09.659287+00:00",
     "delivery_status": "local_only"
+  },
+  {
+    "id": "local-d51d6fd4-2d59-4c67-b3e3-7c0f1424d82c",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "redo the last job",
+    "created_time": "2026-09-15T08:06:47.975945+00:00",
+    "delivery_status": "local_only"
+  },
+  {
+    "id": "local-f628f044-533a-41e5-a1d8-b9aaab05f3d3",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "out",
+    "message": "Connect to agent first to start instruction",
+    "created_time": "2026-09-15T08:06:47.976924+00:00",
+    "delivery_status": "local_only"
+  },
+  {
+    "id": "241a881a-1f10-450b-a43e-2c0d01c8640b",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "redo the last job",
+    "created_time": "2026-09-15T08:06:56.464360+00:00"
+  },
+  {
+    "id": "c7bf263c-71bc-41f8-bd9a-10f83d8be21b",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "out",
+    "message": "Happy to run that again.\n\nFor the record: your previous job \u2014 \"Send WhatsApp Message to Irdynaa\" \u2014 was already submitted successfully. This will be a fresh repeat of the same task.\n\n**Objective**\nOpen WhatsApp on this desktop and send a message to the contact named \"Irdynaa\".\n\n**Deliverable**\nThe message \"Hi Love You\" is sent to Irdynaa in WhatsApp.\n\n**Details for the worker**\n- Platform: WhatsApp desktop app on this machine\n- Recipient: the contact named \"Irdynaa\" (exact name as written)\n- Message text: Hi Love You\n\n**Assumption**\nThere is one contact matching \"Irdynaa\"; if several near-matches appear, the worker should use the closest exact match and note the choice.\n\n**Status**\nThis job has not been submitted yet.\n\nPlease confirm whether I should submit this exact job, and I'll send it to the worker right away."
+  },
+  {
+    "id": "aec01fa5-f3d0-4509-843c-7c647398779f",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "in",
+    "message": "confirm",
+    "created_time": "2026-09-15T08:07:07.730082+00:00"
+  },
+  {
+    "id": "f0dd3097-3aae-4915-a704-207f596c825c",
+    "org_id": "b8e2ce43-4288-409b-b535-e3b30daa72b1",
+    "user_id": "31189df6-162b-4607-b65b-966c1daae33a",
+    "type": "out",
+    "message": "The job \"Send WhatsApp Message to Irdynaa\" was submitted successfully."
   }
 ]
