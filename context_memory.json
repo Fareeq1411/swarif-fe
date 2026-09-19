@@ -4,7 +4,7 @@
     {
       "step_no": 1,
       "step": "decide_action",
-      "summary": "User replied \"confirm\" to the most recent final summary for the WhatsApp message job to Irdynaa, and that summary is unchanged. No workspace files are involved. All four readiness questions are satisfied, so the job is submitted now."
+      "summary": "User's latest message \"confirm\" is a clear affirmative confirmation of the immediately preceding final job summary (open WhatsApp and send \"Hi\" to contact Amad, from Swarif). Scope unchanged; no workspace files involved and no prior submission in extra_data. All four readiness questions are yes, so submitting the job."
     }
   ],
   "step_count": 1

@@ -1306,11 +1306,11 @@ class Agent:
 
         session = Agent.read_session()
         if session is False:
-            return False
+            raise RuntimeError("Cannot save reply: session is expired or missing organization information")
 
         org_id = session.get("org_id")
         if not isinstance(org_id, str) or not org_id.strip():
-            return False
+            raise RuntimeError("Cannot save reply: session is expired or missing organization information")
 
         Agent.read_local_chat()
 
@@ -1435,6 +1435,49 @@ class Agent:
         return []
 
     @staticmethod
+    def _ensure_decision(response, user_prompt, system_prompt, step, should_continue=None):
+        """Retry unusable model output before performing any side effects."""
+        actions = system_prompt["action_avalailble"]
+        reply_action = "send_message" if "send_message" in actions else "reply_message"
+
+        def valid(value):
+            if not isinstance(value, dict) or value.get("next_action") not in actions:
+                return False
+            args = value.get("args")
+            if not isinstance(args, dict):
+                return False
+            if value["next_action"] == reply_action:
+                return isinstance(args.get("message"), str) and bool(args["message"].strip())
+            if value["next_action"] == "submit_job":
+                return (isinstance(args.get("task_title"), str)
+                        and bool(args["task_title"].strip())
+                        and bool(args.get("task_prompt"))
+                        and isinstance(args.get("extra_data", {}), dict))
+            return True
+
+        for attempt in range(2):
+            if valid(response):
+                return response
+            if should_continue is not None and not should_continue():
+                return None
+            correction = dict(system_prompt)
+            correction["mandatory_correction"] = (
+                "The previous response was empty or invalid. Return a complete JSON decision "
+                "using reply_format and one allowed next_action with valid args. "
+                "A message action must contain non-empty message text. "
+                "Preserve the user's request and confirmation; do not invent requirements."
+            )
+            response = Agent.generate_llm(user_prompt, correction, step=f"{step}_retry_{attempt + 1}")
+        if valid(response):
+            return response
+        return {
+            "next_action": reply_action,
+            "args": {"message": "Sorry, I couldn't generate a valid response to your message. Please try again."},
+            "step_summary": "Model returned unusable decisions after retries",
+            "short_summary": "Preparing reply",
+        }
+
+    @staticmethod
     def decide_action_learning(
         message,
         org_id,
@@ -1505,6 +1548,11 @@ describing what you are considering or intend to do in this step.
         response = Agent.generate_llm(
             user_prompt, system_prompt, step="learning_intake"
         )
+        response = Agent._ensure_decision(
+            response, user_prompt, system_prompt, "learning_intake", should_continue
+        )
+        if response is None:
+            return None
         Agent._report_step(response, on_step, "Reviewing workflow")
         if should_continue is not None and not should_continue():
             return None
@@ -1522,7 +1570,7 @@ describing what you are considering or intend to do in this step.
                 should_continue=should_continue,
                 on_step=on_step,
             )
-        return False
+        raise RuntimeError("The learning decision did not produce a reply")
 
     @staticmethod
     def generator_job(org_id, user_id, should_continue=None, on_step=None):
@@ -1880,6 +1928,11 @@ and extra_data. Do not ask the user to provide a title.
                 corrected_prompt,
                 step="decide_action_title_correction",
             )
+        response = Agent._ensure_decision(
+            response, user_prompt, system_prompt, "decide_action", should_continue
+        )
+        if response is None:
+            return None
         Agent._report_step(response, on_step, "Reviewing request")
 
         if should_continue is not None and not should_continue():
@@ -2012,7 +2065,7 @@ and extra_data. Do not ask the user to provide a title.
                 on_job_created=on_job_created,
             )
 
-        return False
+        raise RuntimeError("The assistant decision did not produce a reply or submit a job")
 
     @staticmethod
     def reset_context_memory():

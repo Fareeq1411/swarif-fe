@@ -652,7 +652,7 @@ class SwarifBackend(QObject):
 
             try:
                 if items[-1]["learning_mode"]:
-                    Agent.decide_action_learning(
+                    result = Agent.decide_action_learning(
                         combined_prompt,
                         items[-1]["org_id"],
                         items[-1]["user_id"],
@@ -661,7 +661,7 @@ class SwarifBackend(QObject):
                         on_job_created=job_created,
                     )
                 else:
-                    Agent.decide_action(
+                    result = Agent.decide_action(
                         combined_prompt,
                         items[-1]["org_id"],
                         items[-1]["user_id"],
@@ -670,11 +670,22 @@ class SwarifBackend(QObject):
                         on_step=show_step,
                         on_job_created=job_created,
                     )
+                if not result and still_current():
+                    raise RuntimeError("The assistant finished without producing a reply")
             except Exception as error:
                 log(error)
                 if still_current():
+                    with self._agent_condition:
+                        submitted_job_id = (self._active_task or {}).get("active_job_id")
+                    failure_message = (
+                        "Your job was submitted, but I couldn't display the confirmation. "
+                        "Check Jobs for its status."
+                        if submitted_job_id else
+                        "Sorry, I couldn't complete a reply to your message. Please try again."
+                    )
                     self._send_failure_reply(
-                        error, items[-1]["org_id"], items[-1]["user_id"]
+                        error, items[-1]["org_id"], items[-1]["user_id"],
+                        user_message=failure_message,
                     )
                     self.backend_error.emit(str(error))
             finally:

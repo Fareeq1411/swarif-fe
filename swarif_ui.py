@@ -1,4 +1,5 @@
 import json
+from collections import defaultdict, deque
 import html
 import ipaddress
 import re
@@ -10,10 +11,11 @@ from datetime import datetime
 
 from pathlib import Path
 
-from PyQt5.QtCore import QEvent, QMimeData, QPoint, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QColor, QDesktopServices, QDrag, QFont, QIcon, QPainter, QPainterPath, QPixmap, QRegion, QTransform
+from PyQt5.QtCore import QElapsedTimer, QEvent, QMimeData, QPoint, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QConicalGradient, QPen, QColor, QDesktopServices, QDrag, QFont, QIcon, QPainter, QPainterPath, QPixmap, QRegion, QTransform
 from PyQt5.QtWidgets import (
     QApplication,
+    QBoxLayout,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -22,6 +24,7 @@ from PyQt5.QtWidgets import (
     QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QInputDialog,
     QMenu,
@@ -132,6 +135,7 @@ class BrandMark(QWidget):
 
 class TitleBar(QFrame):
     minimize_clicked = pyqtSignal()
+    maximize_clicked = pyqtSignal()
     close_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
@@ -158,6 +162,12 @@ class TitleBar(QFrame):
         self.minimize.setIconSize(QSize(13, 13))
         self.minimize.setToolTip("Minimize to floating icon")
         self.minimize.clicked.connect(self.minimize_clicked)
+        self.maximize = QPushButton()
+        self.maximize.setObjectName("windowButton")
+        self.maximize.setIcon(qta.icon("fa5s.expand", color="#526176"))
+        self.maximize.setIconSize(QSize(13, 13))
+        self.maximize.setToolTip("Enter full screen")
+        self.maximize.clicked.connect(self.maximize_clicked)
         self.close_button = QPushButton()
         self.close_button.setObjectName("windowButton")
         self.close_button.setIcon(qta.icon("fa5s.times", color="#526176"))
@@ -165,6 +175,7 @@ class TitleBar(QFrame):
         self.close_button.setToolTip("Close")
         self.close_button.clicked.connect(self.close_clicked)
         layout.addWidget(self.minimize)
+        layout.addWidget(self.maximize)
         layout.addWidget(self.close_button)
 
     def set_compact(self, compact):
@@ -175,10 +186,16 @@ class TitleBar(QFrame):
         self.mark.setVisible(True)
         self.brand.setVisible(not compact)
         self.close_button.setVisible(True)
+        self.maximize.setVisible(not compact)
         self.minimize.setFixedSize(30, 30)
         icon_name = "fa5s.expand-alt" if compact else "fa5s.window-minimize"
         self.minimize.setIcon(qta.icon(icon_name, color="#526176"))
         self.minimize.setToolTip("Restore Swarif" if compact else "Minimize to floating icon")
+
+    def set_maximized(self, maximized):
+        icon_name = "fa5s.compress" if maximized else "fa5s.expand"
+        self.maximize.setIcon(qta.icon(icon_name, color="#526176"))
+        self.maximize.setToolTip("Exit full screen" if maximized else "Enter full screen")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -272,14 +289,24 @@ class Sidebar(QFrame):
     files_clicked = pyqtSignal()
     settings_clicked = pyqtSignal()
 
-    def __init__(self, user_name="Swarif", active_page="chat", connected=False, parent=None):
+    def __init__(self, user_name="Swarif", active_page="chat", connected=False,
+                 collapsed=False, parent=None):
         super().__init__(parent)
         self.setObjectName("sidebar")
-        self.setFixedWidth(190)
+        self._collapsed = bool(collapsed)
+        self._full_screen = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(13, 18, 13, 17)
         layout.setSpacing(9)
+
+        self.collapse_button = QPushButton()
+        self.collapse_button.setObjectName("sidebarCollapseButton")
+        self.collapse_button.setIconSize(QSize(18, 18))
+        self.collapse_button.setFixedSize(40, 40)
+        self.collapse_button.setCursor(Qt.PointingHandCursor)
+        self.collapse_button.clicked.connect(self.toggle_collapsed)
+        layout.addWidget(self.collapse_button, 0, Qt.AlignRight)
 
         self.nav_buttons = {
             "chat": NavButton("fa5s.comment-alt", "Chat", active=active_page == "chat"),
@@ -301,15 +328,18 @@ class Sidebar(QFrame):
 
         profile = QFrame()
         profile.setObjectName("profile")
+        self.profile = profile
         profile_layout = QHBoxLayout(profile)
         profile_layout.setContentsMargins(5, 8, 3, 8)
         profile_layout.setSpacing(8)
-        profile_layout.addWidget(UserAvatar(34))
+        self.profile_avatar = UserAvatar(34)
+        profile_layout.addWidget(self.profile_avatar)
 
         profile_copy = QVBoxLayout()
         profile_copy.setSpacing(0)
         name = QLabel(user_name)
         name.setObjectName("profileName")
+        self.profile_name = name
         self.status = QLabel()
         self.status.setObjectName("status")
         profile_copy.addWidget(name)
@@ -317,9 +347,16 @@ class Sidebar(QFrame):
         profile_layout.addLayout(profile_copy)
         layout.addWidget(profile)
 
+        self.connection_indicator = QLabel()
+        self.connection_indicator.setObjectName("connectionIndicator")
+        self.connection_indicator.setFixedSize(46, 32)
+        self.connection_indicator.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self.connection_indicator, 0, Qt.AlignHCenter)
+
         logout = NavButton("fa5s.sign-out-alt", "Log out")
         logout.setObjectName("logoutButton")
         logout.clicked.connect(self.logout_clicked)
+        self.logout_button = logout
         settings_button = QPushButton()
         settings_button.setObjectName(
             "settingsIconActive" if active_page == "settings" else "settingsIconButton"
@@ -341,13 +378,59 @@ class Sidebar(QFrame):
         )
         self.settings_button = settings_button
 
-        actions = QHBoxLayout()
+        actions = QBoxLayout(QBoxLayout.LeftToRight)
         actions.setContentsMargins(0, 0, 0, 0)
         actions.setSpacing(6)
         actions.addWidget(logout, 1)
         actions.addWidget(settings_button)
+        self.actions_layout = actions
         layout.addLayout(actions)
         self.set_connected(connected)
+        self.set_collapsed(self._collapsed)
+
+    def toggle_collapsed(self):
+        self.set_collapsed(not self._collapsed)
+        window = self.window()
+        if hasattr(window, "_sidebar_collapsed"):
+            window._sidebar_collapsed = self._collapsed
+
+    def set_collapsed(self, collapsed):
+        self._collapsed = bool(collapsed)
+        self.update_width()
+        side_margin = 10 if self._collapsed else 13
+        self.layout().setContentsMargins(side_margin, 18, side_margin, 17)
+        self.layout().setAlignment(
+            self.collapse_button,
+            Qt.AlignHCenter if self._collapsed else Qt.AlignRight,
+        )
+        self.collapse_button.setIcon(qta.icon("fa5s.bars", color="#40516A"))
+        self.collapse_button.setToolTip(
+            "Expand navigation" if self._collapsed else "Collapse navigation"
+        )
+        self.collapse_button.setAccessibleName(self.collapse_button.toolTip())
+        labels = {"chat": "Chat", "jobs": "Jobs", "files": "Files"}
+        for name, button in self.nav_buttons.items():
+            button.setText("" if self._collapsed else labels[name])
+            button.setToolTip(labels[name])
+            button.setAccessibleName(labels[name])
+        self.profile.setVisible(not self._collapsed)
+        self.connection_indicator.setVisible(self._collapsed)
+        self.actions_layout.setDirection(
+            QBoxLayout.TopToBottom if self._collapsed else QBoxLayout.LeftToRight
+        )
+        self.logout_button.setText("" if self._collapsed else "Log out")
+        self.logout_button.setToolTip("Log out")
+        self.logout_button.setAccessibleName("Log out")
+
+    def set_full_screen(self, full_screen):
+        self._full_screen = bool(full_screen)
+        self.update_width()
+
+    def update_width(self):
+        if self._collapsed:
+            self.setFixedWidth(84 if self._full_screen else 72)
+        else:
+            self.setFixedWidth(230 if self._full_screen else 190)
 
     def activate_and_emit(self, page, signal):
         for name, button in self.nav_buttons.items():
@@ -367,6 +450,14 @@ class Sidebar(QFrame):
     def set_connected(self, connected):
         self.status.setText("●  Connected" if connected else "●  Disconnected")
         self.status.setProperty("connected", bool(connected))
+        indicator_icon = "fa5s.check-circle" if connected else "fa5s.times-circle"
+        indicator_color = "#20A05A" if connected else "#D44D59"
+        indicator_text = "Connected" if connected else "Disconnected"
+        self.connection_indicator.setPixmap(
+            qta.icon(indicator_icon, color=indicator_color).pixmap(QSize(19, 19))
+        )
+        self.connection_indicator.setToolTip(indicator_text)
+        self.connection_indicator.setAccessibleName(indicator_text)
         self.status.style().unpolish(self.status)
         self.status.style().polish(self.status)
 
@@ -411,7 +502,7 @@ def format_chat_message(value, outgoing=False):
         heading = re.fullmatch(r"\s*\*\*(.+?)\*\*\s*", line)
         if heading:
             rendered_lines.append(
-                f'<div style="font-size: 15px; font-weight: 700; color: {foreground}; '
+                f'<div style="font-size: 115%; font-weight: 700; color: {foreground}; '
                 f'margin-top: 7px; margin-bottom: 2px;">{html.escape(heading.group(1))}</div>'
             )
         elif re.match(r"^\s*[-•]\s+", line):
@@ -427,9 +518,12 @@ def format_chat_message(value, outgoing=False):
 class MessageBubble(QWidget):
     def __init__(self, text, timestamp, outgoing=False, parent=None):
         super().__init__(parent)
+        self._message_text = text
+        self._base_bubble_width = 235 if outgoing else 220
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(6, 4, 6, 12)
-        outer.setSpacing(4)
+        outer.setContentsMargins(6, 3, 6, 12)
+        outer.setSpacing(3)
 
         line = QHBoxLayout()
         line.setSpacing(8)
@@ -447,29 +541,89 @@ class MessageBubble(QWidget):
         bubble.setOpenExternalLinks(True)
         bubble.setObjectName("bubbleOutgoing" if outgoing else "bubbleIncoming")
         bubble.setMaximumWidth(255)
-        bubble.setMinimumWidth(235 if outgoing else 220)
+        bubble.setMinimumWidth(self._base_bubble_width)
         bubble.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
-        bubble_shadow = QGraphicsDropShadowEffect(bubble)
-        bubble_shadow.setBlurRadius(18)
-        bubble_shadow.setOffset(0, 5)
-        bubble_shadow.setColor(QColor(31, 77, 133, 52))
-        bubble.setGraphicsEffect(bubble_shadow)
         line.addWidget(bubble, 0, Qt.AlignTop)
+        self.bubble = bubble
         if not outgoing:
             line.addStretch()
         outer.addLayout(line)
 
         time_line = QHBoxLayout()
+        time_line.setSpacing(6)
         if outgoing:
             time_line.addStretch()
-            stamp = QLabel(f"{timestamp}  ✓✓")
         else:
             time_line.addSpacing(40)
-            stamp = QLabel(timestamp)
-            time_line.addStretch()
+        stamp = QLabel(timestamp)
         stamp.setObjectName("timestamp")
-        time_line.insertWidget(1 if outgoing else 0, stamp)
+        time_line.addWidget(stamp)
+        self.copy_button = QPushButton()
+        self.copy_button.setObjectName("copyMessageButton")
+        self.copy_button.setIcon(qta.icon("fa5.copy", color=MUTED))
+        self.copy_button.setIconSize(QSize(12, 12))
+        self.copy_button.setFixedSize(22, 22)
+        self.copy_button.setCursor(Qt.PointingHandCursor)
+        self.copy_button.setToolTip("Copy message")
+        self.copy_button.setAccessibleName("Copy message")
+        self.copy_button.setStyleSheet(
+            "QPushButton { background: transparent; border: none; border-radius: 5px; }"
+            "QPushButton:hover { background: #EAF3FF; }"
+            "QPushButton:pressed { background: #DCE7F4; }"
+        )
+        self._copy_reset_timer = QTimer(self)
+        self._copy_reset_timer.setSingleShot(True)
+        self._copy_reset_timer.setInterval(10000)
+        self._copy_reset_timer.timeout.connect(self.reset_copy_button)
+        self.copy_button.clicked.connect(self.copy_message)
+        time_line.addWidget(self.copy_button)
+        if not outgoing:
+            time_line.addStretch()
         outer.addLayout(time_line)
+
+    def copy_message(self):
+        if self._copy_reset_timer.isActive():
+            return
+        QApplication.clipboard().setText(self._message_text)
+        self.copy_button.setIcon(qta.icon("fa5s.check", color=MUTED, color_disabled=MUTED))
+        self.copy_button.setToolTip("Copied")
+        self.copy_button.setAccessibleName("Message copied")
+        self.copy_button.setEnabled(False)
+        self._copy_reset_timer.start()
+
+    def reset_copy_button(self):
+        self.copy_button.setIcon(qta.icon("fa5.copy", color=MUTED))
+        self.copy_button.setToolTip("Copy message")
+        self.copy_button.setAccessibleName("Copy message")
+        self.copy_button.setEnabled(True)
+
+    def minimumSizeHint(self):
+        # Rich-text labels can report a minimum height calculated at a narrower
+        # width than the rendered bubble. Let the layout's heightForWidth decide
+        # the height instead of reserving invisible space beneath the messages.
+        hint = super().minimumSizeHint()
+        return QSize(hint.width(), 0)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Grow message cards on wider windows, but retain a readable line length.
+        available_width = event.size().width()
+        full_screen = bool(self.window().property("fullScreenMode"))
+        # Keep opposing messages visually separated instead of allowing wide
+        # sent and received cards to occupy the same horizontal region.
+        width_ratio = 0.42 if full_screen else 0.54
+        maximum_width = 760 if full_screen else 580
+        target_width = max(255, min(maximum_width, int(available_width * width_ratio)))
+        self.bubble.setMaximumWidth(target_width)
+        # QLabel otherwise prefers its narrow size hint even when considerably
+        # more horizontal room is available. Long messages should use that room
+        # and wrap later; short replies remain naturally compact.
+        longest_line = max(
+            (len(line) for line in self._message_text.splitlines()),
+            default=0,
+        )
+        preferred_width = target_width if longest_line >= 55 else self._base_bubble_width
+        self.bubble.setMinimumWidth(preferred_width)
 
 
 class AnimatedDots(QLabel):
@@ -984,6 +1138,49 @@ class GrowingMessageEdit(QTextEdit):
         super().keyPressEvent(event)
 
 
+class NeonInputOutline(QWidget):
+    """Mouse-transparent neon ring, completing one slow revolution in 24 seconds."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAutoFillBackground(False)
+        self.setStyleSheet("background: transparent; border: none;")
+        self._elapsed = QElapsedTimer()
+        self._elapsed.start()
+        self._timer = QTimer(self)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self.update)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._timer.start()
+
+    def hideEvent(self, event):
+        self._timer.stop()
+        super().hideEvent(event)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        rect = QRectF(self.rect()).adjusted(4, 4, -4, -4)
+        radius = min(28, rect.height() / 2)
+        path = QPainterPath()
+        path.addRoundedRect(rect, radius, radius)
+        angle = (self._elapsed.elapsed() % 24000) * 360 / 24000
+        gradient = QConicalGradient(rect.center(), angle)
+        for position, color in (
+            (0, "#16BFFF"), (0.25, "#087DDF"), (0.5, "#18E6B0"),
+            (0.75, "#16CFC8"), (1, "#16BFFF"),
+        ):
+            gradient.setColorAt(position, QColor(color))
+        painter.setBrush(Qt.NoBrush)
+        for width, opacity in ((8, 0.08), (5, 0.16), (1.6, 0.9)):
+            painter.setOpacity(opacity)
+            painter.setPen(QPen(gradient, width))
+            painter.drawPath(path)
+
+
 class Composer(QFrame):
     message_submitted = pyqtSignal(str)
     stop_requested = pyqtSignal()
@@ -992,20 +1189,10 @@ class Composer(QFrame):
         super().__init__(parent)
         self.setObjectName("composer")
         self.setMinimumHeight(58)
-        composer_shadow = QGraphicsDropShadowEffect(self)
-        composer_shadow.setBlurRadius(28)
-        composer_shadow.setOffset(0, 5)
-        composer_shadow.setColor(QColor(36, 120, 235, 55))
-        self.setGraphicsEffect(composer_shadow)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(15, 7, 8, 7)
         layout.setSpacing(8)
 
-        attach = QPushButton()
-        attach.setObjectName("attachButton")
-        attach.setIcon(qta.icon("fa5s.paperclip", color=BLUE))
-        attach.setIconSize(QSize(16, 16))
-        attach.setToolTip("Attach a file")
         self.message = GrowingMessageEdit()
         self.message.setObjectName("messageInput")
         self.message.setPlaceholderText("Type a message...")
@@ -1034,11 +1221,29 @@ class Composer(QFrame):
         send_layout.addWidget(self.stop_status)
         send_layout.addWidget(self.send, 0, Qt.AlignHCenter)
 
-        layout.addWidget(attach)
         layout.addWidget(self.message, 1)
         layout.addLayout(send_layout)
 
         self._task_state = "idle"
+        self.neon_outline = NeonInputOutline(self)
+        self.neon_outline.setGeometry(self.rect())
+        self.neon_outline.raise_()
+        self.neon_outline.show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Force every composer layer into the same rounded shape. This avoids
+        # Qt painting a rectangular backing surface behind the gradient/outline.
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(
+            QRectF(self.rect()),
+            min(32, self.height() / 2),
+            min(32, self.height() / 2),
+        )
+        self.setMask(QRegion(clip_path.toFillPolygon().toPolygon()))
+        if hasattr(self, "neon_outline"):
+            self.neon_outline.setGeometry(self.rect())
+            self.neon_outline.raise_()
 
     def set_task_state(self, state):
         self._task_state = state if state in {
@@ -1047,7 +1252,7 @@ class Composer(QFrame):
         log(f"Stop button state: {self._task_state}")
         stopping = self._task_state == "stopping"
         active = self._task_state in {"thinking", "executing"}
-        self.message.setEnabled(not active and not stopping)
+        self.message.setEnabled(True)
         self.send.setEnabled(not stopping)
         self.stop_status.setVisible(stopping)
         if stopping:
@@ -1074,6 +1279,8 @@ class Composer(QFrame):
             self.submit_message()
 
     def submit_message(self):
+        if self._task_state != "idle":
+            return
         message = self.message.toPlainText().strip()
         if not message:
             return
@@ -1623,32 +1830,35 @@ class ChatPanel(QFrame):
         scroll.setObjectName("chatScroll")
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Make each mouse-wheel notch cover more conversation while preserving
+        # precise scrollbar dragging and programmatic scroll positioning.
+        scroll.verticalScrollBar().setSingleStep(36)
         conversation = QWidget()
         conversation.setObjectName("conversation")
         messages = QVBoxLayout(conversation)
-        messages.setContentsMargins(18, 20, 18, 96)
+        messages.setContentsMargins(18, 20, 18, 12)
         messages.setSpacing(2)
+        messages.setSizeConstraint(QLayout.SetMinAndMaxSize)
         self.messages_layout = messages
-        valid_messages = [item for item in (chat_messages or []) if isinstance(item, dict)]
+        valid_messages = [item for item in (chat_messages or [])
+                          if isinstance(item, dict) and isinstance(item.get("message"), str)
+                          and item["message"].strip()]
         self.load_more_button = QPushButton("Load more")
         self.load_more_button.setObjectName("loadMoreButton")
         self.load_more_button.setCursor(Qt.PointingHandCursor)
         self.load_more_button.setVisible(False)
         self.load_more_button.clicked.connect(self.request_more_messages)
         messages.addWidget(self.load_more_button, 0, Qt.AlignHCenter)
+        self.message_rows = []
         if valid_messages:
             ordered_messages = reversed(valid_messages) if newest_first else valid_messages
             for item in ordered_messages:
                 text = item.get("message")
                 if not isinstance(text, str) or not text.strip():
                     continue
-                messages.addWidget(
-                    MessageBubble(
-                        text.strip(),
-                        format_chat_time(item.get("created_time")),
-                        outgoing=item.get("type") == "in",
-                    )
-                )
+                row = MessageBubble(text.strip(), format_chat_time(item.get("created_time")), outgoing=item.get("type") == "in")
+                self.message_rows.append((self.message_key(item), row))
+                messages.addWidget(row)
         else:
             self.empty_state = QWidget()
             empty_layout = QVBoxLayout(self.empty_state)
@@ -1692,33 +1902,11 @@ class ChatPanel(QFrame):
         self.has_more_messages = bool(has_more_messages)
         scroll.verticalScrollBar().valueChanged.connect(self.update_scroll_controls)
         scroll.verticalScrollBar().rangeChanged.connect(self.update_scroll_controls)
-        self.initial_scroll_active = bool(scroll_to_bottom_on_show)
-        if scroll_to_bottom_on_show:
-            scroll.verticalScrollBar().rangeChanged.connect(
-                self.keep_opening_at_bottom
-            )
-            QTimer.singleShot(0, self.scroll_to_bottom)
-            QTimer.singleShot(1000, self.finish_initial_scroll)
-        elif preserve_bottom_on_refresh:
-            scroll.verticalScrollBar().rangeChanged.connect(
-                self.keep_refresh_at_bottom
-            )
-            QTimer.singleShot(0, self.scroll_to_bottom)
-            QTimer.singleShot(500, self.finish_refresh_at_bottom)
+        self.initial_scroll_active = False
+        if scroll_to_bottom_on_show or preserve_bottom_on_refresh:
+            QTimer.singleShot(0, lambda: QTimer.singleShot(0, self.scroll_to_bottom))
         elif initial_scroll_value is not None:
-            self._scroll_restore_value = int(initial_scroll_value)
-            scroll.verticalScrollBar().rangeChanged.connect(
-                self.keep_refresh_position
-            )
-            QTimer.singleShot(0, self.keep_refresh_position)
-            QTimer.singleShot(500, self.finish_refresh_position)
-        elif history_scroll_anchor is not None:
-            old_value, old_maximum = history_scroll_anchor
-            self._history_anchor_value = int(old_value)
-            self._history_anchor_maximum = int(old_maximum)
-            scroll.verticalScrollBar().rangeChanged.connect(self.keep_history_position)
-            QTimer.singleShot(0, self.keep_history_position)
-            QTimer.singleShot(500, self.finish_history_position)
+            QTimer.singleShot(0, lambda: self.restore_scroll(initial_scroll_value))
 
         self.jump_to_bottom_button = QPushButton(self.chat_scroll.viewport())
         self.jump_to_bottom_button.setObjectName("jumpToBottomButton")
@@ -1765,13 +1953,9 @@ class ChatPanel(QFrame):
             self.position_composer()
 
     def position_composer(self):
-        margin = 0
-        height = self.composer_wrap.height()
         self.composer_wrap.setGeometry(
-            margin,
-            max(0, self.height() - height - margin),
-            max(0, self.width() - margin * 2),
-            height,
+            0, max(0, self.height() - self.composer_wrap.height()),
+            self.width(), self.composer_wrap.height(),
         )
         self.composer_wrap.raise_()
         if hasattr(self, "jump_to_bottom_button"):
@@ -1784,10 +1968,7 @@ class ChatPanel(QFrame):
         self.composer_wrap.setFixedHeight(wrapper_height)
         margins = self.messages_layout.contentsMargins()
         self.messages_layout.setContentsMargins(
-            margins.left(),
-            margins.top(),
-            margins.right(),
-            wrapper_height + 12,
+            margins.left(), margins.top(), margins.right(), wrapper_height + 12
         )
         self.position_composer()
 
@@ -1799,9 +1980,9 @@ class ChatPanel(QFrame):
         scrollbar = self.chat_scroll.verticalScrollBar()
         value = scrollbar.value()
         self.load_more_button.setVisible(
-            self.has_more_messages and int(value) <= 2
+            self.has_more_messages and bool(self.message_rows)
         )
-        away_from_bottom = value < max(0, scrollbar.maximum() - 2)
+        away_from_bottom = value < max(0, scrollbar.maximum() - 32)
         self.jump_to_bottom_button.setVisible(away_from_bottom)
         if away_from_bottom:
             self.position_jump_to_bottom_button()
@@ -1835,59 +2016,54 @@ class ChatPanel(QFrame):
         self.load_more_button.setEnabled(True)
         self.load_more_button.setText("Couldn't load — try again")
 
-    def keep_history_position(self, *_args):
-        scrollbar = self.chat_scroll.verticalScrollBar()
-        added_height = max(0, scrollbar.maximum() - self._history_anchor_maximum)
-        scrollbar.setValue(self._history_anchor_value + added_height)
-
-    def finish_history_position(self):
-        self.keep_history_position()
-        try:
-            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
-                self.keep_history_position
-            )
-        except (TypeError, RuntimeError):
-            pass
-
-    def keep_opening_at_bottom(self, _minimum, maximum):
-        self.chat_scroll.verticalScrollBar().setValue(maximum)
-
-    def finish_initial_scroll(self):
-        self.scroll_to_bottom()
-        self.initial_scroll_active = False
-        try:
-            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
-                self.keep_opening_at_bottom
-            )
-        except (TypeError, RuntimeError):
-            pass
-
     def restore_scroll(self, value):
         self.chat_scroll.verticalScrollBar().setValue(int(value))
 
-    def keep_refresh_at_bottom(self, *_args):
-        self.scroll_to_bottom()
+    @staticmethod
+    def message_key(item):
+        return (item.get("message", "").strip(), item.get("created_time"), item.get("type"))
 
-    def finish_refresh_at_bottom(self):
-        self.scroll_to_bottom()
-        try:
-            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
-                self.keep_refresh_at_bottom
-            )
-        except (TypeError, RuntimeError):
-            pass
-
-    def keep_refresh_position(self, *_args):
-        self.restore_scroll(self._scroll_restore_value)
-
-    def finish_refresh_position(self):
-        self.keep_refresh_position()
-        try:
-            self.chat_scroll.verticalScrollBar().rangeChanged.disconnect(
-                self.keep_refresh_position
-            )
-        except (TypeError, RuntimeError):
-            pass
+    def update_messages(self, items, has_more=False):
+        scrollbar = self.chat_scroll.verticalScrollBar()
+        old_value = scrollbar.value()
+        previous_latest = self.message_rows[-1][0] if self.message_rows else None
+        at_bottom = old_value >= max(0, scrollbar.maximum() - 32)
+        anchor = next((row for _, row in self.message_rows if row.y() + row.height() > old_value), None)
+        offset = anchor.y() - old_value if anchor is not None else 0
+        available = defaultdict(deque)
+        for key, row in self.message_rows:
+            available[key].append(row)
+            self.messages_layout.removeWidget(row)
+        rows = []
+        for item in items or []:
+            if not isinstance(item, dict) or not isinstance(item.get("message"), str) or not item["message"].strip():
+                continue
+            key = self.message_key(item)
+            row = available[key].popleft() if available[key] else MessageBubble(key[0], format_chat_time(item.get("created_time")), outgoing=item.get("type") == "in")
+            self.messages_layout.insertWidget(1 + len(rows), row)
+            rows.append((key, row))
+        for unused in available.values():
+            for row in unused:
+                row.hide()
+                row.deleteLater()
+        self.message_rows = rows
+        if self.empty_state is not None:
+            self.empty_state.setVisible(not rows and not self.processing_container.isVisible())
+        self.has_more_messages = bool(has_more)
+        self.load_more_button.setEnabled(True)
+        self.load_more_button.setText("Load more")
+        self.update_scroll_controls()
+        self.messages_layout.activate()
+        def restore_position():
+            if at_bottom or (rows and rows[-1][0] != previous_latest):
+                self.scroll_to_bottom()
+            elif anchor is not None and any(row is anchor for _, row in self.message_rows):
+                self.restore_scroll(anchor.y() - offset)
+            else:
+                self.restore_scroll(old_value)
+        restore_position()
+        # Qt updates the scroll range after processing the layout request.
+        QTimer.singleShot(0, lambda: QTimer.singleShot(0, restore_position))
 
     def set_agent_typing(self, typing, summary="Thinking"):
         self.typing_indicator.set_summary(summary)
@@ -1897,10 +2073,15 @@ class ChatPanel(QFrame):
         self.composer.set_task_state(state)
 
     def update_processing_jobs(self, processing_jobs, job_progress, job_started_at=None):
+        job_ids = {str(job.get("id")) for job in processing_jobs}
+        new_progress = bool(job_ids - getattr(self, "_visible_progress_ids", set()))
+        self._visible_progress_ids = job_ids
+        old_value = self.chat_scroll.verticalScrollBar().value() if hasattr(self, "chat_scroll") else 0
         while self.processing_layout.count():
             item = self.processing_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
         for job in processing_jobs:
             job_id = job.get("id")
@@ -1913,7 +2094,15 @@ class ChatPanel(QFrame):
             )
         self.processing_container.setVisible(bool(processing_jobs))
         if self.empty_state is not None:
-            self.empty_state.setVisible(not processing_jobs)
+            self.empty_state.setVisible(not self.message_rows and not processing_jobs)
+
+        if hasattr(self, "chat_scroll"):
+            def restore_position():
+                if new_progress:
+                    self.scroll_to_bottom()
+                else:
+                    self.restore_scroll(old_value)
+            QTimer.singleShot(0, lambda: QTimer.singleShot(0, restore_position))
 
 
 class ConnectionLogDialog(QDialog):
@@ -2196,6 +2385,8 @@ class SwarifWindow(QWidget):
         self.jobs_panel = None
         self.files_panel = None
         self._compact = False
+        self._sidebar_collapsed = False
+        self._maximized = False
         self._expanded_size = QSize(760, 700)
         self._expanded_position = None
         self.setWindowTitle("Swarif")
@@ -2218,6 +2409,7 @@ class SwarifWindow(QWidget):
         shadow.setOffset(0, 9)
         shadow.setColor(QColor(34, 83, 142, 68))
         card.setGraphicsEffect(shadow)
+        self.window_shadow = shadow
 
         self.card_layout = QVBoxLayout(card)
         self.card_layout.setContentsMargins(0, 0, 0, 0)
@@ -2225,6 +2417,7 @@ class SwarifWindow(QWidget):
 
         self.title_bar = TitleBar()
         self.title_bar.minimize_clicked.connect(self.toggle_compact)
+        self.title_bar.maximize_clicked.connect(self.toggle_maximized)
         self.title_bar.close_clicked.connect(self.close)
         self.card_layout.addWidget(self.title_bar)
         self.current_page = None
@@ -2259,6 +2452,13 @@ class SwarifWindow(QWidget):
 
     def toggle_compact(self):
         """Collapse to a floating control or restore the window in place."""
+        if not self._compact and self.isFullScreen():
+            self.showNormal()
+            self._maximized = False
+            self.setProperty("fullScreenMode", False)
+            self.title_bar.set_maximized(False)
+            self.layout().setContentsMargins(14, 14, 14, 14)
+            self.window_shadow.setEnabled(True)
         self._compact = not self._compact
         self.setProperty("compact", self._compact)
         if self._compact:
@@ -2290,6 +2490,36 @@ class SwarifWindow(QWidget):
         elif self._expanded_position is not None:
             restored_position = QPoint(self._expanded_position)
             QTimer.singleShot(0, lambda: self.move(restored_position))
+
+    def toggle_maximized(self):
+        """Toggle a true screen-filling workspace."""
+        if self._compact:
+            self.toggle_compact()
+        self._maximized = not self.isFullScreen()
+        # Set this before the window resize so responsive chat rows can read
+        # the target display mode during their resize events.
+        self.setProperty("fullScreenMode", self._maximized)
+        if self._maximized:
+            self._expanded_size = self.size()
+            self._expanded_position = self.pos()
+            self.showFullScreen()
+        else:
+            self.showNormal()
+            self.resize(self._expanded_size)
+            if self._expanded_position is not None:
+                self.move(self._expanded_position)
+        self.title_bar.set_maximized(self._maximized)
+        margins = (0, 0, 0, 0) if self._maximized else (14, 14, 14, 14)
+        self.layout().setContentsMargins(*margins)
+        self.window_shadow.setEnabled(not self._maximized)
+        if self.sidebar is not None:
+            self.sidebar.set_full_screen(self._maximized)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        for widget in self.findChildren(QWidget):
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+        QTimer.singleShot(0, self.update_window_card_mask)
 
     def show_login(self):
         self.cancel_section_loading()
@@ -2328,8 +2558,9 @@ class SwarifWindow(QWidget):
             self.current_page is not None
             and self.current_page.objectName() in {"homePage", "jobsPage", "settingsPage"}
         ):
-            left += 190
-            width -= 190
+            sidebar_width = self.sidebar.width() if self.sidebar is not None else 190
+            left += sidebar_width
+            width -= sidebar_width
         self.loading_overlay.setGeometry(
             left,
             top,
@@ -2358,6 +2589,10 @@ class SwarifWindow(QWidget):
         session = Agent.read_session()
         if not session:
             self.show_login()
+            return
+
+        if self.current_page is not None and self.current_page.objectName() == "homePage":
+            self.chat_panel.scroll_to_bottom()
             return
 
         request_id = self.begin_section_loading("Loading chat…")
@@ -2399,8 +2634,9 @@ class SwarifWindow(QWidget):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
         fallback_name = session.get("email", "Swarif").split("@", 1)[0].title()
-        sidebar = Sidebar(user_name=session.get("name") or fallback_name, active_page="chat", connected=self._server_connected)
+        sidebar = Sidebar(user_name=session.get("name") or fallback_name, active_page="chat", connected=self._server_connected, collapsed=self._sidebar_collapsed)
         self.sidebar = sidebar
+        sidebar.set_full_screen(self._maximized)
         sidebar.logout_clicked.connect(self.logout)
         sidebar.chat_clicked.connect(self.show_home)
         sidebar.jobs_clicked.connect(self.show_jobs)
@@ -2470,8 +2706,9 @@ class SwarifWindow(QWidget):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
         fallback_name = session.get("email", "Swarif").split("@", 1)[0].title()
-        sidebar = Sidebar(user_name=session.get("name") or fallback_name, active_page="jobs", connected=self._server_connected)
+        sidebar = Sidebar(user_name=session.get("name") or fallback_name, active_page="jobs", connected=self._server_connected, collapsed=self._sidebar_collapsed)
         self.sidebar = sidebar
+        sidebar.set_full_screen(self._maximized)
         sidebar.logout_clicked.connect(self.logout)
         sidebar.chat_clicked.connect(self.show_home)
         sidebar.jobs_clicked.connect(self.show_jobs)
@@ -2497,8 +2734,9 @@ class SwarifWindow(QWidget):
         body_layout.setContentsMargins(0, 0, 0, 0)
         body_layout.setSpacing(0)
         fallback_name = session.get("email", "Swarif").split("@", 1)[0].title()
-        sidebar = Sidebar(user_name=session.get("name") or fallback_name, active_page="settings", connected=self._server_connected)
+        sidebar = Sidebar(user_name=session.get("name") or fallback_name, active_page="settings", connected=self._server_connected, collapsed=self._sidebar_collapsed)
         self.sidebar = sidebar
+        sidebar.set_full_screen(self._maximized)
         sidebar.logout_clicked.connect(self.logout)
         sidebar.chat_clicked.connect(self.show_home)
         sidebar.jobs_clicked.connect(self.show_jobs)
@@ -2716,8 +2954,10 @@ class SwarifWindow(QWidget):
             user_name=session.get("name") or fallback_name,
             active_page="files",
             connected=self._server_connected,
+            collapsed=self._sidebar_collapsed,
         )
         self.sidebar = sidebar
+        sidebar.set_full_screen(self._maximized)
         sidebar.logout_clicked.connect(self.logout)
         sidebar.chat_clicked.connect(self.show_home)
         sidebar.jobs_clicked.connect(self.show_jobs)
@@ -2753,42 +2993,9 @@ class SwarifWindow(QWidget):
     def update_chat_messages(self, chat_messages, history_scroll_anchor=None):
         if self.current_page is None or self.current_page.objectName() != "homePage":
             return
-        old_panel = self.chat_panel
-        old_scrollbar = old_panel.chat_scroll.verticalScrollBar()
-        scroll_value = old_scrollbar.value()
-        was_at_bottom = scroll_value >= max(0, old_scrollbar.maximum() - 2)
-        continue_initial_scroll = old_panel.initial_scroll_active
-        self.home_layout.removeWidget(old_panel)
-        old_panel.setParent(None)
-        old_panel.deleteLater()
-        self.chat_panel = ChatPanel(
-            chat_messages=chat_messages or [],
-            newest_first=False,
-            processing_jobs=self.processing_jobs(),
-            job_progress=self._job_progress,
-            job_started_at=self._job_processing_started,
-            agent_typing=self._agent_typing,
-            agent_typing_summary=self._agent_typing_summary,
-            learning_mode=self._learning_mode,
-            scroll_to_bottom_on_show=continue_initial_scroll,
-            initial_scroll_value=(
-                None
-                if continue_initial_scroll or history_scroll_anchor is not None
-                else scroll_value
-            ),
-            preserve_bottom_on_refresh=(
-                history_scroll_anchor is None
-                and not continue_initial_scroll
-                and was_at_bottom
-            ),
-            has_more_messages=self._chat_has_more,
-            history_scroll_anchor=history_scroll_anchor,
-        )
-        self.chat_panel.message_submitted.connect(self.message_submitted)
-        self.chat_panel.stop_requested.connect(self.stop_requested)
-        self.chat_panel.load_more_requested.connect(self.load_more_chat)
+        self.chat_panel.update_messages(chat_messages, has_more=self._chat_has_more)
+        self.chat_panel.set_agent_typing(self._agent_typing, self._agent_typing_summary)
         self.chat_panel.set_task_state(self.effective_composer_state())
-        self.home_layout.addWidget(self.chat_panel, 1)
 
     def logout(self):
         Agent.clear_session()
@@ -2811,7 +3018,7 @@ class SwarifWindow(QWidget):
         """Clip child panels so all four card corners remain rounded on Windows."""
         if not hasattr(self, "window_card") or self.window_card.width() < 1:
             return
-        radius = 34 if self._compact else 24
+        radius = 0 if self.isFullScreen() else (34 if self._compact else 24)
         path = QPainterPath()
         path.addRoundedRect(
             QRectF(self.window_card.rect()),
@@ -2937,6 +3144,10 @@ QToolTip {{
     border: 1px solid #D7E3F1;
     border-radius: 24px;
 }}
+#swarifWindow[fullScreenMode="true"] #windowCard,
+#swarifWindow[fullScreenMode="true"] #titleBar,
+#swarifWindow[fullScreenMode="true"] #sidebar,
+#swarifWindow[fullScreenMode="true"] #chatPanel {{ border-radius: 0; }}
 #titleBar {{
     background: #F7FAFE;
     border-top-left-radius: 24px;
@@ -2965,6 +3176,10 @@ QToolTip {{
     border: none; border-radius: 11px; padding: 0 13px;
     text-align: left; font-size: 14px; font-weight: 500;
 }}
+#sidebarCollapseButton {{
+    background: transparent; border: none; border-radius: 10px; padding: 0;
+}}
+#sidebarCollapseButton:hover {{ background: #EDF4FD; }}
 #navButton {{ background: transparent; color: #40516A; }}
 #navButton:hover {{ background: #EDF4FD; color: {BLUE}; }}
 #navActive {{ background: {BLUE}; color: white; font-weight: 600; }}
@@ -3028,7 +3243,7 @@ QToolTip {{
 #emptyText {{ color: #95A4B8; font-size: 11px; }}
 #emptyIcon {{ margin-bottom: 3px; }}
 #composer {{
-    background: white; border: 1px solid #D8E4F1; border-radius: 22px;
+    background: white; border: none; border-radius: 22px;
 }}
 #messageInput {{
     border: none; background: transparent; font-size: 13px; padding: 4px;
@@ -3404,7 +3619,7 @@ QToolTip {{
         stop: 0.52 rgba(224, 241, 255, 214),
         stop: 1 rgba(239, 248, 255, 230)
     );
-    border: 1px solid #B7D8FB;
+    border: none;
     border-radius: 28px;
 }}
 #swarifWindow #messageInput {{
@@ -3486,6 +3701,54 @@ QToolTip {{
 QScrollBar:vertical {{ background: transparent; width: 5px; margin: 3px; }}
 QScrollBar::handle:vertical {{ background: #46698F; border-radius: 2px; min-height: 28px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+
+/* Full-screen mode is flush with every screen edge. */
+#swarifWindow[fullScreenMode="true"] #brand {{ font-size: 29px; }}
+#swarifWindow[fullScreenMode="true"] #navButton,
+#swarifWindow[fullScreenMode="true"] #navActive,
+#swarifWindow[fullScreenMode="true"] #logoutButton {{ font-size: 16px; }}
+#swarifWindow[fullScreenMode="true"] #profileName {{ font-size: 15px; }}
+#swarifWindow[fullScreenMode="true"] #status {{ font-size: 12px; }}
+#swarifWindow[fullScreenMode="true"] #bubbleIncoming,
+#swarifWindow[fullScreenMode="true"] #bubbleOutgoing {{
+    border-radius: 22px;
+    padding: 18px 22px;
+    font-size: 18px;
+}}
+#swarifWindow[fullScreenMode="true"] #timestamp {{ font-size: 13px; }}
+#swarifWindow[fullScreenMode="true"] #typingDots {{ font-size: 18px; }}
+#swarifWindow[fullScreenMode="true"] #typingSummary {{ font-size: 14px; }}
+#swarifWindow[fullScreenMode="true"] #emptyTitle {{ font-size: 18px; }}
+#swarifWindow[fullScreenMode="true"] #emptyText {{ font-size: 14px; }}
+#swarifWindow[fullScreenMode="true"] #learningBanner {{
+    padding: 12px 18px;
+    font-size: 13px;
+}}
+#swarifWindow[fullScreenMode="true"] #composer {{ border-radius: 32px; }}
+#swarifWindow[fullScreenMode="true"] #messageInput {{
+    padding: 8px 6px;
+    font-size: 16px;
+}}
+#swarifWindow[fullScreenMode="true"] #attachButton {{
+    width: 34px;
+    height: 42px;
+    font-size: 23px;
+}}
+#swarifWindow[fullScreenMode="true"] #sendButton {{
+    width: 48px;
+    height: 48px;
+    border-radius: 24px;
+    font-size: 22px;
+}}
+#swarifWindow[fullScreenMode="true"] #windowCard {{
+    border: none;
+    border-radius: 0;
+}}
+#swarifWindow[fullScreenMode="true"] #titleBar,
+#swarifWindow[fullScreenMode="true"] #sidebar,
+#swarifWindow[fullScreenMode="true"] #chatPanel {{
+    border-radius: 0;
+}}
 """
 
 

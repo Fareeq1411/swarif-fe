@@ -97,6 +97,53 @@ class TaskLifecycleTests(unittest.TestCase):
         self.assertIsNone(backend._active_task)
         self.assertEqual(backend._agent_messages, {})
 
+    def test_empty_agent_result_shows_failure_instead_of_silently_finishing(self):
+        for result in (False, None):
+            with self.subTest(result=result):
+                window = FakeWindow()
+                backend = SwarifBackend(window)
+                backend.poll_timer.stop()
+                backend._active_task = {
+                    "state": "thinking", "cancel_event": threading.Event(),
+                    "active_job_id": None, "cancel_requested": False,
+                }
+                sequence = backend._register_agent_message("confirm", "org-1", "user-1")
+                backend._agent_messages[sequence]["ready"] = True
+                messages = []
+                with patch.object(Agent, "decide_action", return_value=result), \
+                     patch.object(Agent, "reply_message", return_value=False), \
+                     patch.object(Agent, "append_local_chat", side_effect=messages.append):
+                    worker = threading.Thread(target=backend._agent_loop)
+                    worker.start()
+                    worker.join(timeout=2)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(len(messages), 1)
+                self.assertEqual(messages[0]["type"], "out")
+                self.assertIn("couldn't complete a reply", messages[0]["message"])
+                self.assertIsNone(backend._active_task)
+
+    def test_missing_confirmation_does_not_tell_user_to_resubmit_job(self):
+        window = FakeWindow()
+        backend = SwarifBackend(window)
+        backend.poll_timer.stop()
+        backend._active_task = {
+            "state": "thinking", "cancel_event": threading.Event(),
+            "active_job_id": None, "cancel_requested": False,
+        }
+        sequence = backend._register_agent_message("confirm", "org-1", "user-1")
+        backend._agent_messages[sequence]["ready"] = True
+        def decide(*args, **kwargs):
+            kwargs["on_job_created"]({"id": "job-1"})
+            return False
+        with patch.object(Agent, "decide_action", side_effect=decide), \
+             patch.object(backend, "_send_failure_reply") as reply:
+            worker = threading.Thread(target=backend._agent_loop)
+            worker.start()
+            worker.join(timeout=2)
+        self.assertFalse(worker.is_alive())
+        self.assertIn("Check Jobs", reply.call_args.kwargs["user_message"])
+        self.assertEqual(backend._active_task["active_job_id"], "job-1")
+
     def test_stop_cancels_only_exact_submitted_job(self):
         window = FakeWindow()
         backend = SwarifBackend(window)
