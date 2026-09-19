@@ -4,7 +4,7 @@
     {
       "step_no": 1,
       "step": "decide_action",
-      "summary": "User's latest message \"confirm\" is a clear affirmative confirmation of the immediately preceding final job summary (open WhatsApp and send \"Hi\" to contact Amad, from Swarif). Scope unchanged; no workspace files involved and no prior submission in extra_data. All four readiness questions are yes, so submitting the job."
+      "summary": "User replied \"confirm\" to the intact final job summary for restyling the projection profits table (formatting only, Subs Plans tab, style reference = plan table above), with scope unchanged and all readiness checks satisfied. Submitting the job now with task title and sheet details; no workspace files are involved, so no workspace_paths are added."
     }
   ],
   "step_count": 1

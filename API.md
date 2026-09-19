@@ -644,9 +644,18 @@ Request:
 {
   "job_id": "job-id",
   "org_id": "organization-id",
-  "user_id": "user-id"
+  "user_id": "user-id",
+  "input_token": 70,
+  "output_token": 12,
+  "context_memory": {
+    "messages": 4
+  }
 }
 ```
+
+`input_token` and `output_token` are required non-negative integers. `context_memory`
+is required and must contain valid JSON (either a JSON value or a string containing
+valid JSON).
 
 Success — `200 OK`:
 
@@ -656,7 +665,12 @@ Success — `200 OK`:
   "cancelled": true,
   "job_id": "job-id",
   "status": 2,
-  "status_name": "failed"
+  "status_name": "failed",
+  "input_token": 70,
+  "output_token": 12,
+  "context_memory": {
+    "messages": 4
+  }
 }
 ```
 
@@ -666,11 +680,13 @@ marker in the job's JSON `response` column:
 `{"cancelled":true,"reason":"client_requested"}`. Completion checks this marker
 and only completes queued/processing rows in the same atomic update, so a worker
 cannot complete a job after cancellation wins the race. The cancelled row is then
-archived in `job_log`, making it available through inactive/history jobs.
+archived in `job_log`, making it available through inactive/history jobs. The supplied
+`input_token`, `output_token`, and `context_memory` values are saved before archival.
 
 Errors:
 
-- `400 Bad Request` when `job_id`, `org_id`, or `user_id` is missing.
+- `400 Bad Request` when a required field is missing, either token count is negative,
+  or `context_memory` is not valid JSON.
 - `404 Not Found` when the job is unknown or does not belong to the supplied organization and user.
 
 ### Update and archive job
